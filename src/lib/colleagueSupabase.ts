@@ -2,46 +2,43 @@ import type { Order, Personnel } from '../domain/breakfastTypes'
 import { supabase } from './supabaseClient'
 
 /**
- * 與 public.colleagues 欄位對應（snake_case）。
- * 飲料以 fixed_drink_id 為準；載入時 selectedDrinkId 由固定飲料帶入。
- *
- * 建議資料表（若欄位名稱不同請調整本檔或資料庫）：
- * - id text primary key
- * - name text not null
- * - fixed_drink_id text null（對應 menu_items.id）
- * - disliked_food_ids text[] not null default '{}'
- * - extra_remark text null
- * - requires_untoasted_toast boolean not null default false
- * - is_absent boolean not null default false
- * - selected_food_id text null
- * - is_manual boolean not null default false
- * - food_remark text null
+ * 與 Supabase public.colleagues 實際欄位一致：
+ * id, name, fixed_drink, requires_untoasted_toast, dislike_list, is_absent,
+ * current_food, current_note, internal_note, is_manual, created_at
  */
 export type ColleagueRow = {
   id: string
   name: string
-  fixed_drink_id: string | null
-  disliked_food_ids: string[]
-  extra_remark: string | null
+  fixed_drink: string | null
   requires_untoasted_toast: boolean
+  dislike_list: string[] | null
   is_absent: boolean
-  selected_food_id: string | null
+  current_food: string | null
+  current_note: string | null
+  internal_note: string | null
   is_manual: boolean
-  food_remark: string | null
+  created_at?: string
 }
 
+/** upsert / insert 時不送 created_at */
+export type ColleagueUpsertPayload = Omit<ColleagueRow, 'created_at'>
+
 const COLLEAGUE_SELECT =
-  'id, name, fixed_drink_id, disliked_food_ids, extra_remark, requires_untoasted_toast, is_absent, selected_food_id, is_manual, food_remark'
+  'id, name, fixed_drink, requires_untoasted_toast, dislike_list, is_absent, current_food, current_note, internal_note, is_manual'
+
+function normalizeDislikeList(raw: ColleagueRow['dislike_list']): string[] {
+  if (raw == null) return []
+  if (Array.isArray(raw)) return [...raw]
+  return []
+}
 
 export function personnelFromRow(r: ColleagueRow): Personnel {
   return {
     id: r.id,
     name: r.name,
-    fixedDrinkId: r.fixed_drink_id,
-    dislikedFoodIds: Array.isArray(r.disliked_food_ids)
-      ? [...r.disliked_food_ids]
-      : [],
-    extraRemark: r.extra_remark ?? undefined,
+    fixedDrinkId: r.fixed_drink,
+    dislikedFoodIds: normalizeDislikeList(r.dislike_list),
+    extraRemark: r.internal_note ?? undefined,
     requiresUntoastedToast: r.requires_untoasted_toast,
     isAbsent: r.is_absent,
   }
@@ -50,17 +47,17 @@ export function personnelFromRow(r: ColleagueRow): Personnel {
 export function orderFromRow(r: ColleagueRow): Order {
   return {
     userId: r.id,
-    selectedDrinkId: r.fixed_drink_id,
-    selectedFoodId: r.selected_food_id,
+    selectedDrinkId: r.fixed_drink,
+    selectedFoodId: r.current_food,
     isManual: r.is_manual,
-    foodRemark: r.food_remark ?? undefined,
+    foodRemark: r.current_note ?? undefined,
   }
 }
 
 export function colleagueRowFromPersonnelAndOrder(
   p: Personnel,
   o: Order | undefined,
-): ColleagueRow {
+): ColleagueUpsertPayload {
   const mealOrder =
     o ??
     ({
@@ -74,14 +71,14 @@ export function colleagueRowFromPersonnelAndOrder(
   return {
     id: p.id,
     name: p.name,
-    fixed_drink_id: p.fixedDrinkId ?? null,
-    disliked_food_ids: [...p.dislikedFoodIds],
-    extra_remark: p.extraRemark ?? null,
+    fixed_drink: p.fixedDrinkId ?? null,
     requires_untoasted_toast: p.requiresUntoastedToast ?? false,
+    dislike_list: [...p.dislikedFoodIds],
     is_absent: p.isAbsent ?? false,
-    selected_food_id: mealOrder.selectedFoodId ?? null,
+    current_food: mealOrder.selectedFoodId ?? null,
+    current_note: mealOrder.foodRemark ?? null,
+    internal_note: p.extraRemark ?? null,
     is_manual: mealOrder.isManual,
-    food_remark: mealOrder.foodRemark ?? null,
   }
 }
 
@@ -101,7 +98,7 @@ export async function fetchColleaguesFromSupabase(): Promise<{
   return { personnel, orders }
 }
 
-export async function upsertColleagueRows(rows: ColleagueRow[]): Promise<void> {
+export async function upsertColleagueRows(rows: ColleagueUpsertPayload[]): Promise<void> {
   if (rows.length === 0) return
   const { error } = await supabase.from('colleagues').upsert(rows, {
     onConflict: 'id',
@@ -109,7 +106,7 @@ export async function upsertColleagueRows(rows: ColleagueRow[]): Promise<void> {
   if (error) throw error
 }
 
-export async function insertColleagueRow(row: ColleagueRow): Promise<void> {
+export async function insertColleagueRow(row: ColleagueUpsertPayload): Promise<void> {
   const { error } = await supabase.from('colleagues').insert(row)
   if (error) throw error
 }

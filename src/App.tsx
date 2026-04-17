@@ -6,10 +6,10 @@ import { MenuManagementPanel } from './components/MenuManagementPanel'
 import { fetchColleaguesFromSupabase } from './lib/colleagueSupabase'
 import {
   deleteMenuItemById,
-  deleteMenuItemsByCategoryId,
+  deleteMenuItemsByCategoryName,
   fetchMenuFromSupabase,
   insertMenuItemRow,
-  menuItemToRow,
+  menuItemToInsertPayload,
 } from './lib/menuSupabase'
 import type { Order, Personnel } from './domain/breakfastTypes'
 
@@ -105,7 +105,7 @@ function App() {
       if (args.newCategory) {
         setCategories(nextCategories)
       }
-      const row = menuItemToRow(args.item, nextCategories)
+      const row = menuItemToInsertPayload(args.item, nextCategories)
       await insertMenuItemRow(row)
       setMenu((prev) => [...prev, args.item])
     },
@@ -118,7 +118,7 @@ function App() {
   }, [])
 
   const onRemoveMenuCategory = useCallback(async (categoryId: string) => {
-    await deleteMenuItemsByCategoryId(categoryId)
+    await deleteMenuItemsByCategoryName(categoryId)
     setMenu((prev) => prev.filter((m) => m.categoryId !== categoryId))
     setCategories((prev) => prev.filter((c) => c.id !== categoryId))
   }, [])

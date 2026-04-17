@@ -7,7 +7,6 @@ import {
 import {
   type MenuCategoryDef,
   type MenuItem,
-  newCategoryId,
   newMenuItemId,
   sortCategoriesForDisplay,
 } from '../data/menuData'
@@ -97,14 +96,14 @@ export function MenuManagementPanel({
     if (categoryChoice === NEW_CAT_VALUE) {
       const cn = newCatName.trim()
       if (!cn || (newCatDrink && newCatToast)) return
-      const id = newCategoryId()
+      /** 與 DB `category` 字串一致：id／name 皆用分類名稱 */
       newCategory = {
-        id,
+        id: cn,
         name: cn,
         isDrink: newCatDrink,
         isToast: newCatToast && !newCatDrink,
       }
-      targetCategoryId = id
+      targetCategoryId = cn
     }
 
     if (!targetCategoryId || targetCategoryId === NEW_CAT_VALUE) return
