@@ -984,36 +984,61 @@ export function BreakfastOrderingApp({
           {/* 左 2/3：截圖專區（同事列表 → 店家彙整 → 新增同事） */}
           <aside className="flex min-w-0 flex-col lg:col-span-2">
             <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-2xl border border-amber-200/70 bg-white/90 shadow-sm">
-              <div className="flex flex-wrap items-start justify-between gap-2 border-b border-amber-100 px-4 py-3">
-                <div className="min-w-0 flex-1">
-                  <h2 className="text-sm font-semibold text-amber-950">
-                    同事列表
-                  </h2>
-                  <p className="mt-1 text-xs text-amber-800/60">
-                    共 {personnel.length} 人 · 單擊姓名選取、雙擊切換休假；右側編輯
-                  </p>
-                </div>
-                <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
-                  <button
-                    type="button"
-                    onClick={() => void handleAddColleague()}
-                    disabled={addColleagueBusy}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-amber-400/80 bg-amber-50 text-lg font-semibold leading-none text-amber-950 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
-                    title="新增同事（使用下方姓名欄）"
-                    aria-label="新增同事"
-                  >
-                    ＋
-                  </button>
-                  <button
-                    type="button"
-                    onClick={deleteSelectedColleague}
-                    disabled={personnel.length <= 1}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-300/90 bg-rose-50 text-lg font-semibold leading-none text-rose-900 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-40"
-                    title="刪除目前選中的同事"
-                    aria-label="刪除同事"
-                  >
-                    －
-                  </button>
+              <div className="border-b border-amber-100 px-3 py-3 sm:px-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
+                  <div className="min-w-0 flex-1">
+                    <h2 className="text-sm font-semibold text-amber-950">
+                      同事列表
+                    </h2>
+                    <p className="mt-1 text-xs text-amber-800/60">
+                      共 {personnel.length} 人 · 單擊姓名選取、雙擊切換休假；右側編輯
+                    </p>
+                  </div>
+                  <div className="flex min-w-0 flex-wrap items-center justify-end gap-1.5 sm:gap-2 sm:pt-0.5">
+                    <button
+                      type="button"
+                      onClick={deleteSelectedColleague}
+                      disabled={personnel.length <= 1}
+                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-rose-300/90 bg-rose-50 text-lg font-semibold leading-none text-rose-900 hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-40"
+                      title="刪除目前選中的同事"
+                      aria-label="刪除同事"
+                    >
+                      －
+                    </button>
+                    <button
+                      type="button"
+                      onClick={batchSpinAll}
+                      className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg bg-amber-600 px-2.5 text-[11px] font-bold text-white shadow-sm hover:bg-amber-700 sm:px-3 sm:text-xs"
+                      title="為所有出勤且非手動指定餐點的同事隨機配餐；休假與手動套用者略過"
+                    >
+                      🎲 全員轉盤
+                    </button>
+                    <button
+                      type="button"
+                      onClick={clearAllWheelFoodsGlobally}
+                      className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 px-2.5 text-[11px] font-semibold text-rose-800 hover:bg-rose-100 sm:px-3 sm:text-xs"
+                      title="清空非指定套用之餐點，並將全員恢復為出勤"
+                    >
+                      一鍵淨空
+                    </button>
+                    <label className="inline-flex h-8 min-w-0 max-w-full items-center gap-1 rounded-lg border border-amber-300/90 bg-amber-50/80 px-2 py-1 pl-2.5 shadow-inner">
+                      <span className="shrink-0 text-[10px] font-medium text-amber-900/80 sm:text-[11px]">
+                        預算
+                      </span>
+                      <span className="flex min-w-0 items-center gap-0.5 text-amber-800/70">
+                        $
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          autoComplete="off"
+                          value={budgetInput}
+                          onChange={(e) => setBudgetInput(e.target.value)}
+                          aria-label="全域預算（每人餐點上限）"
+                          className="w-[3.25rem] min-w-0 appearance-none border-0 bg-transparent py-0 text-right text-xs font-semibold tabular-nums outline-none ring-0 focus:ring-0 sm:w-[3.75rem] sm:text-sm [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                        />
+                      </span>
+                    </label>
+                  </div>
                 </div>
               </div>
               <ul className="h-auto flex-1 px-1 py-2 sm:px-3">
@@ -1219,8 +1244,8 @@ export function BreakfastOrderingApp({
             </div>
           </aside>
 
-          {/* 右 1/3：操作專區（預算、點餐板、轉盤） */}
-          <main className="flex min-w-0 flex-col gap-3 lg:col-span-1">
+          {/* 右 1/3：操作專區（點餐板、轉盤；預算於左欄工具列） */}
+          <main className="flex min-h-0 min-w-0 flex-1 flex-col gap-3 lg:col-span-1">
             {selectedPerson && currentOrder ? (
               <>
             <section
@@ -1382,19 +1407,10 @@ export function BreakfastOrderingApp({
             </section>
 
             <section
-              className="rounded-2xl border border-orange-200/70 bg-white/90 p-4 shadow-sm shadow-orange-900/5 sm:p-5"
+              className="flex min-h-0 min-w-0 flex-1 flex-col rounded-2xl border border-orange-200/70 bg-white/90 p-4 shadow-sm shadow-orange-900/5 sm:p-5"
               aria-label="Breakfast Wheel 隨機抽籤"
             >
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-stretch lg:gap-5">
-                <div className="flex min-w-0 flex-1 flex-col">
-                  <button
-                    type="button"
-                    onClick={batchSpinAll}
-                    className="mb-1 self-start rounded-lg bg-amber-600 px-3 py-2 text-left text-xs font-bold text-white shadow-sm hover:bg-amber-700 sm:px-4 sm:text-sm"
-                    title="為所有出勤且非手動指定餐點的同事隨機配餐；休假與手動套用者略過"
-                  >
-                    🎲 一鍵全員轉盤
-                  </button>
+              <div className="flex min-w-0 flex-1 flex-col">
                   <h2 className="text-lg font-semibold text-orange-950">
                     隨機抽籤轉盤
                   </h2>
@@ -1519,61 +1535,12 @@ export function BreakfastOrderingApp({
                   '點擊「開始抽餐」以隨機選餐並寫入今日訂單。'
                 )}
               </div>
-                </div>
-
-                <div className="flex w-full shrink-0 flex-col gap-3 border-t border-orange-200/60 pt-4 lg:w-48 lg:max-w-[13rem] lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0 xl:w-52">
-                  <label className="flex flex-col gap-1 text-sm font-medium text-amber-950">
-                    <span>全域預算（每人餐點上限）</span>
-                    <span className="flex items-center gap-2">
-                      <span className="text-amber-800/60">$</span>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        autoComplete="off"
-                        value={budgetInput}
-                        onChange={(e) => setBudgetInput(e.target.value)}
-                        className="w-full min-w-0 appearance-none rounded-lg border border-amber-300 bg-white px-3 py-2 text-base font-semibold tabular-nums shadow-inner outline-none ring-amber-400/30 focus:ring-2 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                      />
-                    </span>
-                  </label>
-                  <p className="text-[11px] leading-snug text-amber-900/60">
-                    單擊左側姓名選人、雙擊切換休假；與轉盤連動。
-                  </p>
-                  <button
-                    type="button"
-                    onClick={clearAllWheelFoodsGlobally}
-                    className="w-full rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-left text-sm font-semibold text-rose-800 hover:bg-rose-100"
-                    title="清空非指定套用之餐點，並將全員恢復為出勤"
-                  >
-                    一鍵淨空
-                  </button>
-                  <p className="text-[11px] leading-snug text-rose-900/55">
-                    影響全部 {personnel.length}
-                    人；清空非指定餐點、取消全員休假；指定套用與飲品／忌口設定不變
-                  </p>
-                </div>
               </div>
             </section>
               </>
             ) : (
               <>
-                <div className="rounded-2xl border border-amber-200/80 bg-white/95 p-4 shadow-sm">
-                  <label className="flex flex-col gap-1 text-sm font-medium text-amber-950">
-                    <span>全域預算（每人餐點上限）</span>
-                    <span className="flex items-center gap-2">
-                      <span className="text-amber-800/60">$</span>
-                      <input
-                        type="text"
-                        inputMode="numeric"
-                        autoComplete="off"
-                        value={budgetInput}
-                        onChange={(e) => setBudgetInput(e.target.value)}
-                        className="w-full max-w-[10rem] appearance-none rounded-lg border border-amber-300 bg-white px-3 py-2 text-base font-semibold tabular-nums shadow-inner outline-none ring-amber-400/30 focus:ring-2 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                      />
-                    </span>
-                  </label>
-                </div>
-                <div className="flex min-h-[min(24rem,50vh)] flex-col gap-4">
+                <div className="flex min-h-[min(28rem,55vh)] flex-1 flex-col gap-4">
                   <div className="rounded-2xl border border-dashed border-amber-300/80 bg-gradient-to-br from-amber-50/90 to-orange-50/50 px-5 py-8 shadow-inner">
                     <p className="text-base font-semibold text-amber-950">
                       尚未選取同事
