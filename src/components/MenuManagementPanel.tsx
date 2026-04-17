@@ -8,16 +8,29 @@ import {
 import {
   type MenuCategoryDef,
   type MenuItem,
-  newMenuItemId,
   sortCategoriesForDisplay,
 } from '../data/menuData'
 
 const CATEGORY_DATALIST_ID = 'menu-category-options'
 
+function formatMenuAddError(err: unknown): string {
+  if (err && typeof err === 'object') {
+    const o = err as { message?: unknown; details?: unknown }
+    if (typeof o.message === 'string' && o.message.trim()) return o.message
+    if (typeof o.details === 'string' && o.details.trim()) return o.details
+  }
+  if (err instanceof Error && err.message) return err.message
+  return typeof err === 'string' ? err : '新增失敗，請見主控台詳情'
+}
+
 type Props = {
-  categories: MenuCategoryDef[]
+  /** 僅用於顯示與寫入；類別清單由 menu 內不重複的 categoryId 動態產生 */
   menu: MenuItem[]
-  onAddItem: (args: { item: MenuItem }) => Promise<void>
+  onAddItem: (args: {
+    name: string
+    price: number
+    category: string
+  }) => Promise<void>
   onRemoveItem: (itemId: string) => Promise<void>
   onRemoveCategory: (categoryId: string) => Promise<void>
 }
@@ -29,7 +42,6 @@ function categoryEmoji(c: MenuCategoryDef): string {
 }
 
 export function MenuManagementPanel({
-  categories,
   menu,
   onAddItem,
   onRemoveItem,
@@ -40,28 +52,36 @@ export function MenuManagementPanel({
   /** 類別：可從 datalist 選現有，或直接輸入新類別名稱 */
   const [categoryInput, setCategoryInput] = useState('')
   const [saving, setSaving] = useState(false)
+  const [addError, setAddError] = useState<string | null>(null)
   const didInitCategoryRef = useRef(false)
+
+  /** 由 menu 內品項提取不重複類別（無獨立 categories 表） */
+  const categoriesFromMenu = useMemo(() => {
+    const set = new Set<string>()
+    for (const m of menu) {
+      const c = (m.categoryId ?? '').trim()
+      if (c) set.add(c)
+    }
+    const labels = [...set].sort((a, b) => a.localeCompare(b, 'zh-Hant'))
+    const defs: MenuCategoryDef[] = labels.map((name) => ({ id: name, name }))
+    return sortCategoriesForDisplay(defs)
+  }, [menu])
 
   /** 僅在首次取得類別列表時帶入預設值，避免與使用者清空／輸入衝突 */
   useEffect(() => {
     if (didInitCategoryRef.current) return
-    if (categories.length === 0) return
-    setCategoryInput(categories[0]?.name ?? '')
+    if (categoriesFromMenu.length === 0) return
+    setCategoryInput(categoriesFromMenu[0]?.name ?? '')
     didInitCategoryRef.current = true
-  }, [categories])
-
-  const categoriesDisplayOrder = useMemo(
-    () => sortCategoriesForDisplay(categories),
-    [categories],
-  )
+  }, [categoriesFromMenu])
 
   const itemsByCategoryLists = useMemo(
     () =>
-      categoriesDisplayOrder.map((c) => ({
+      categoriesFromMenu.map((c) => ({
         category: c,
         items: menu.filter((m) => m.categoryId === c.id),
       })),
-    [categoriesDisplayOrder, menu],
+    [categoriesFromMenu, menu],
   )
 
   const removeCategory = useCallback(
@@ -89,21 +109,20 @@ export function MenuManagementPanel({
       0,
       Math.min(999999, parseInt(itemPrice.replace(/\D/g, ''), 10) || 0),
     )
-    const id = newMenuItemId()
-    const item: MenuItem = {
-      id,
-      name,
-      price,
-      categoryId: cat,
-    }
 
     setSaving(true)
+    setAddError(null)
     try {
-      await onAddItem({ item })
+      await onAddItem({
+        name,
+        price: Number(price),
+        category: cat,
+      })
       setItemName('')
       setItemPrice(String(price))
-    } catch (e) {
-      console.error(e)
+    } catch (e: unknown) {
+      console.error('新增餐點失敗:', e)
+      setAddError(formatMenuAddError(e))
     } finally {
       setSaving(false)
     }
@@ -144,7 +163,7 @@ export function MenuManagementPanel({
                 className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-emerald-400/20 placeholder:text-slate-400 focus:ring-2 disabled:opacity-50"
               />
               <datalist id={CATEGORY_DATALIST_ID}>
-                {categoriesDisplayOrder.map((c) => (
+                {categoriesFromMenu.map((c) => (
                   <option key={c.id} value={c.name} />
                 ))}
               </datalist>
@@ -187,6 +206,14 @@ export function MenuManagementPanel({
         <p className="mt-2 text-[11px] leading-snug text-slate-500">
           類別欄可從建議清單選取，或直接輸入新類別名稱。飲料請將類別命名為「飲料」，轉盤與固定飲料邏輯會依類別名稱判斷。
         </p>
+        {addError ? (
+          <p
+            className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800"
+            role="alert"
+          >
+            新增失敗：{addError}
+          </p>
+        ) : null}
       </section>
 
       <section>

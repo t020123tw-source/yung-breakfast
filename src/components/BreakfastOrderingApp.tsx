@@ -17,6 +17,7 @@ import {
 } from '../data/menuData'
 import type { Order, Personnel } from '../domain/breakfastTypes'
 import {
+  buildNewColleagueInsertPayload,
   colleagueRowFromPersonnelAndOrder,
   deleteColleagueById,
   insertColleagueRow,
@@ -32,6 +33,10 @@ export type BreakfastOrderingAppProps = {
   categories: MenuCategoryDef[]
   initialPersonnel: Personnel[]
   initialOrders: Order[]
+  /** 與 key 同步：refetch 後要預設選中的同事 id */
+  selectPersonIdOnMount?: string | null
+  /** 新增／同步同事資料後由父層 refetch */
+  onColleaguesSynced?: (opts: { newPersonId: string }) => Promise<void>
 }
 
 function buildMenuMap(menu: MenuItem[]): Map<string, MenuItem> {
@@ -88,7 +93,14 @@ function buildFoodLineForShop(
   o: Order,
   person: Personnel | undefined,
 ): string | null {
-  if (!o.selectedFoodId) return null
+  const raw = (o.selectedFoodId ?? '').trim()
+  if (!raw) return null
+  if (o.isManual) {
+    let label = raw
+    const fr = (o.foodRemark ?? '').trim()
+    if (fr) label += `（${fr}）`
+    return label
+  }
   const food = menuFromMap(menuMap, o.selectedFoodId)
   if (!food || !isMealItem(food)) return null
   let label = formatFoodLabelForPerson(food, person)
@@ -134,6 +146,8 @@ export function BreakfastOrderingApp({
   categories,
   initialPersonnel,
   initialOrders,
+  selectPersonIdOnMount,
+  onColleaguesSynced,
 }: BreakfastOrderingAppProps) {
   const [budgetInput, setBudgetInput] = useState('120')
   const globalBudget = useMemo(() => {
@@ -143,7 +157,12 @@ export function BreakfastOrderingApp({
   const [personnel, setPersonnel] = useState<Personnel[]>(initialPersonnel)
   const [orders, setOrders] = useState<Order[]>(initialOrders)
   const [selectedPersonId, setSelectedPersonId] = useState<string>(
-    initialPersonnel[0]?.id ?? '',
+    () =>
+      (selectPersonIdOnMount && selectPersonIdOnMount.length > 0
+        ? selectPersonIdOnMount
+        : null) ??
+      initialPersonnel[0]?.id ??
+      '',
   )
 
   const persistIdsRef = useRef(new Set<string>())
@@ -198,7 +217,8 @@ export function BreakfastOrderingApp({
     })()
   }, [personnel, orders, persistTick])
 
-  const [manualFoodId, setManualFoodId] = useState('')
+  /** 指定餐點手動輸入草稿（與轉盤選中的 id 分離；僅在 isManual 時與 DB 同步顯示） */
+  const [manualFoodDraft, setManualFoodDraft] = useState('')
   const [foodRemarkDraft, setFoodRemarkDraft] = useState('')
 
   const [spinPhase, setSpinPhase] = useState<'idle' | 'spinning'>('idle')
@@ -210,6 +230,19 @@ export function BreakfastOrderingApp({
   const [dislikeModalOpen, setDislikeModalOpen] = useState(false)
   /** 新增同事：永遠顯示於頂部；可輸入姓名後新增（留空則預設「新同事」） */
   const [newColleagueName, setNewColleagueName] = useState('')
+  const [addColleagueError, setAddColleagueError] = useState<string | null>(
+    null,
+  )
+  const [addColleagueBusy, setAddColleagueBusy] = useState(false)
+
+  useEffect(() => {
+    if (
+      selectPersonIdOnMount &&
+      personnel.some((p) => p.id === selectPersonIdOnMount)
+    ) {
+      setSelectedPersonId(selectPersonIdOnMount)
+    }
+  }, [selectPersonIdOnMount, personnel])
 
   /** 延遲單擊選人，避免與雙擊切換休假衝突 */
   const nameClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -238,11 +271,6 @@ export function BreakfastOrderingApp({
 
   /** 固定飲料：categoryId === '飲料'（與轉盤候選分離） */
   const drinkOptions = useMemo(() => getFixedDrinkSelectOptions(menu), [menu])
-  /** 吐司＋一般餐（指定餐點、忌口、轉盤候選） */
-  const foodOptions = useMemo(
-    () => menu.filter((m) => isMealItem(m)),
-    [menu],
-  )
 
   const menuMap = useMemo(() => buildMenuMap(menu), [menu])
 
@@ -303,13 +331,15 @@ export function BreakfastOrderingApp({
       const touched = new Set<string>()
       let any = false
       const next = prev.map((o) => {
-        const sf =
-          o.selectedFoodId && ids.has(o.selectedFoodId)
-            ? o.selectedFoodId
-            : null
         const sd =
           o.selectedDrinkId && ids.has(o.selectedDrinkId)
             ? o.selectedDrinkId
+            : null
+        /** 手動輸入之餐點為任意文字，不可依菜單 id 清掉 */
+        const sf = o.isManual
+          ? o.selectedFoodId
+          : o.selectedFoodId && ids.has(o.selectedFoodId)
+            ? o.selectedFoodId
             : null
         if (sf === o.selectedFoodId && sd === o.selectedDrinkId) return o
         any = true
@@ -327,7 +357,7 @@ export function BreakfastOrderingApp({
 
   useEffect(() => {
     const o = orders.find((x) => x.userId === selectedPersonId)
-    setManualFoodId(o?.selectedFoodId ?? '')
+    setManualFoodDraft(o?.isManual ? (o.selectedFoodId ?? '') : '')
     setFoodRemarkDraft(o?.foodRemark ?? '')
   }, [selectedPersonId, orders])
 
@@ -469,30 +499,49 @@ export function BreakfastOrderingApp({
     [schedulePersist],
   )
 
-  const applyManualFood = useCallback(() => {
-    if (!selectedPersonId || !manualFoodId) return
+  /**
+   * 手動餐點：寫入 current_food 任意文字，is_manual = true；清空時 is_manual = false。
+   * 轉盤結果（is_manual false）不受空白草稿影響。
+   */
+  const commitManualMealInput = useCallback(() => {
+    if (!selectedPersonId) return
     const p = personnel.find((x) => x.id === selectedPersonId)
     if (p?.isAbsent) return
+    const o = orders.find((x) => x.userId === selectedPersonId)
+    if (!o) return
+    const draft = manualFoodDraft.trim()
+    if (draft === '') {
+      if (o.isManual) {
+        setOrders((prev) =>
+          prev.map((row) =>
+            row.userId === selectedPersonId
+              ? {
+                  ...row,
+                  selectedFoodId: null,
+                  isManual: false,
+                  foodRemark: undefined,
+                }
+              : row,
+          ),
+        )
+        setFoodRemarkDraft('')
+        schedulePersist(selectedPersonId)
+      }
+      return
+    }
     setOrders((prev) =>
-      prev.map((o) =>
-        o.userId === selectedPersonId
+      prev.map((row) =>
+        row.userId === selectedPersonId
           ? {
-              ...o,
-              selectedFoodId: manualFoodId,
+              ...row,
+              selectedFoodId: draft,
               isManual: true,
-              foodRemark: foodRemarkDraft.trim() || undefined,
             }
-          : o,
+          : row,
       ),
     )
     schedulePersist(selectedPersonId)
-  }, [
-    selectedPersonId,
-    manualFoodId,
-    foodRemarkDraft,
-    personnel,
-    schedulePersist,
-  ])
+  }, [selectedPersonId, manualFoodDraft, personnel, orders, schedulePersist])
 
   /**
    * 清空所有人非指定套用的餐點，並將全員恢復為出勤（取消休假）。
@@ -572,6 +621,8 @@ export function BreakfastOrderingApp({
 
   const startWheel = useCallback(() => {
     if (!selectedPersonId || wheelCandidates.length === 0) return
+    const co = orders.find((o) => o.userId === selectedPersonId)
+    if (co?.isManual) return
     const p = personnel.find((x) => x.id === selectedPersonId)
     if (p?.isAbsent) return
 
@@ -636,7 +687,7 @@ export function BreakfastOrderingApp({
     }
 
     spinRafRef.current = requestAnimationFrame(run)
-  }, [selectedPersonId, wheelCandidates, personnel, schedulePersist])
+  }, [selectedPersonId, wheelCandidates, personnel, schedulePersist, orders])
 
   const togglePersonAbsentByDoubleClick = useCallback(
     (id: string) => {
@@ -687,39 +738,55 @@ export function BreakfastOrderingApp({
     [togglePersonAbsentByDoubleClick],
   )
 
-  /** 標題列「＋」：列表內新增一列；姓名於右側「當前點餐編輯」修改 */
-  const addColleagueInline = useCallback(async () => {
+  /**
+   * 新增同事：寫入 Supabase（欄位與 colleagues 表一致），成功後由父層 refetch 帶回最新名單。
+   */
+  const handleAddColleague = useCallback(async () => {
+    if (addColleagueBusy) return
     const nameTrim = newColleagueName.trim()
     const displayName = nameTrim.length > 0 ? nameTrim : '新同事'
-    const id = `p-${crypto.randomUUID().slice(0, 8)}`
-    const p: Personnel = {
-      id,
-      name: displayName,
-      fixedDrinkId: null,
-      dislikedFoodIds: [],
-      extraRemark: undefined,
-      requiresUntoastedToast: false,
-      isAbsent: false,
-    }
-    const o: Order = {
-      userId: id,
-      selectedDrinkId: null,
-      selectedFoodId: null,
-      isManual: false,
-      foodRemark: undefined,
-    }
-    const row = colleagueRowFromPersonnelAndOrder(p, o)
+    /** 與 Supabase uuid 欄位相容（勿使用非 UUID 字串） */
+    const id = crypto.randomUUID()
+    const row = buildNewColleagueInsertPayload(id, displayName)
+    setAddColleagueError(null)
+    setAddColleagueBusy(true)
     try {
       await insertColleagueRow(row)
+      setNewColleagueName('')
+      if (onColleaguesSynced) {
+        await onColleaguesSynced({ newPersonId: id })
+      } else {
+        const p: Personnel = {
+          id,
+          name: displayName,
+          fixedDrinkId: null,
+          dislikedFoodIds: [],
+          extraRemark: undefined,
+          requiresUntoastedToast: false,
+          isAbsent: false,
+        }
+        const o: Order = {
+          userId: id,
+          selectedDrinkId: null,
+          selectedFoodId: null,
+          isManual: false,
+          foodRemark: undefined,
+        }
+        setPersonnel((prev) => [...prev, p])
+        setOrders((prev) => [...prev, o])
+        setSelectedPersonId(id)
+      }
     } catch (e) {
-      console.error(e)
-      return
+      console.error('新增失敗詳細原因:', e)
+      const msg =
+        e && typeof e === 'object' && 'message' in e
+          ? String((e as { message?: unknown }).message)
+          : String(e)
+      setAddColleagueError(msg || '新增失敗')
+    } finally {
+      setAddColleagueBusy(false)
     }
-    setNewColleagueName('')
-    setPersonnel((prev) => [...prev, p])
-    setOrders((prev) => [...prev, o])
-    setSelectedPersonId(id)
-  }, [newColleagueName])
+  }, [addColleagueBusy, newColleagueName, onColleaguesSynced])
 
   const shopSummaryLine = useMemo(
     () => buildShopSummaryLine(menuMap, orders, personnel),
@@ -757,93 +824,55 @@ export function BreakfastOrderingApp({
       ? menuFromMap(menuMap, o.selectedDrinkId)?.name ?? ''
       : ''
     let mealLine = ''
-    if (o.selectedFoodId) {
-      const food = menuFromMap(menuMap, o.selectedFoodId)
-      if (food && isMealItem(food)) {
-        const base = formatFoodLabelForPerson(food, p)
-        const fr = (o.foodRemark ?? '').trim()
-        let tail = base
-        if (fr) tail += `（${fr}）`
-        mealLine = tail
+    const fr = (o.foodRemark ?? '').trim()
+    if ((o.selectedFoodId ?? '').trim()) {
+      if (o.isManual) {
+        mealLine = (o.selectedFoodId ?? '').trim()
+        if (fr) mealLine += `（${fr}）`
+      } else {
+        const food = menuFromMap(menuMap, o.selectedFoodId)
+        if (food && isMealItem(food)) {
+          const base = formatFoodLabelForPerson(food, p)
+          let tail = base
+          if (fr) tail += `（${fr}）`
+          mealLine = tail
+        } else {
+          mealLine = (o.selectedFoodId ?? '').trim()
+        }
       }
     }
     return { name: p.name, drinkName, mealLine }
   }
 
-  const selectedFood =
-    selectedPerson && currentOrder
-      ? menuFromMap(menuMap, currentOrder.selectedFoodId)
-      : undefined
+  const todayMealSummaryLine = useMemo(() => {
+    if (!selectedPerson || !currentOrder) return ''
+    if (selectedPerson.isAbsent) return '休假中'
+    const fr = (currentOrder.foodRemark ?? '').trim()
+    const rawFood = (currentOrder.selectedFoodId ?? '').trim()
+    if (currentOrder.isManual && rawFood) {
+      let s = rawFood
+      if (fr) s += `（${fr}）`
+      return s
+    }
+    const food = menuFromMap(menuMap, currentOrder.selectedFoodId)
+    if (food && isMealItem(food)) {
+      const base = formatFoodLabelForPerson(food, selectedPerson)
+      let s = `${base}（$${food.price}）`
+      if (fr) s += `（${fr}）`
+      return s
+    }
+    return ''
+  }, [selectedPerson, currentOrder, menuMap])
 
   return (
     <>
     <div className="w-full text-slate-900">
       <div className="flex w-full flex-col px-4 py-5 sm:px-6 lg:px-10 lg:py-7">
-        <section
-          className="mb-5 rounded-2xl border border-amber-300/80 bg-amber-50/50 p-4 shadow-sm sm:p-5"
-          aria-label="新增同事"
-        >
-          <h2 className="text-sm font-semibold text-amber-950">
-            新增同事
-          </h2>
-          <p className="mt-1 text-xs text-amber-900/65">
-            無論名單是否為空，都可在此加入同事；姓名可留空，將以「新同事」建立。
-          </p>
-          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-            <label className="min-w-0 flex-1 text-sm font-medium text-slate-800">
-              <span className="sr-only">新同事姓名</span>
-              <input
-                type="text"
-                value={newColleagueName}
-                onChange={(e) => setNewColleagueName(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') {
-                    e.preventDefault()
-                    void addColleagueInline()
-                  }
-                }}
-                placeholder="姓名（可留空）"
-                autoComplete="off"
-                className="mt-1 w-full rounded-lg border border-amber-200 bg-white px-3 py-2.5 text-base text-slate-900 outline-none ring-amber-400/30 placeholder:text-slate-400 focus:ring-2"
-              />
-            </label>
-            <button
-              type="button"
-              onClick={() => void addColleagueInline()}
-              className="shrink-0 rounded-xl bg-amber-600 px-6 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-amber-700 sm:py-3"
-            >
-              新增同事
-            </button>
-          </div>
-          {personnel.length === 0 ? (
-            <p className="mt-3 text-sm text-amber-900/75">
-              目前尚無同事資料，請使用上方欄位新增第一位同事。
-            </p>
-          ) : null}
-        </section>
-
-        <header className="mb-5 flex flex-col gap-4 border-b border-amber-200/80 pb-5 sm:flex-row sm:items-end sm:justify-between">
-          <p className="max-w-3xl text-sm text-amber-900/70">
-            全域預算套用全體同事；單擊姓名卡片選人、雙擊切換休假。右側可編輯資料、指定餐點或隨機選餐。「一鍵淨空」會清空非指定套用之餐點並取消全員休假。
-          </p>
-          <label className="flex shrink-0 items-center gap-2 text-sm font-medium text-amber-950">
-            <span className="whitespace-nowrap">全域預算（每人餐點上限）</span>
-            <span className="text-amber-800/60">$</span>
-            <input
-              type="text"
-              inputMode="numeric"
-              autoComplete="off"
-              value={budgetInput}
-              onChange={(e) => setBudgetInput(e.target.value)}
-              className="w-28 appearance-none rounded-lg border border-amber-300 bg-white px-3 py-2 text-base font-semibold tabular-nums shadow-inner outline-none ring-amber-400/30 focus:ring-2 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-            />
-          </label>
-        </header>
-
-        <div className="grid grid-cols-1 gap-5 lg:grid-cols-12 lg:items-start lg:gap-6 xl:gap-8">
-          {/* 左：同事列表（依人數撐開高度，列表區不使用捲軸） */}
-          <aside className="flex flex-col lg:col-span-8 xl:col-span-8">
-            <div className="flex h-auto flex-col rounded-2xl border border-amber-200/70 bg-white/90 shadow-sm">
+        {/* 截圖專區 2/3 · 操作專區 1/3 */}
+        <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-3 lg:gap-5">
+          {/* 左 2/3：截圖專區（同事列表 → 店家彙整 → 新增同事） */}
+          <aside className="flex min-w-0 flex-col lg:col-span-2">
+            <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-2xl border border-amber-200/70 bg-white/90 shadow-sm">
               <div className="flex flex-wrap items-start justify-between gap-2 border-b border-amber-100 px-4 py-3">
                 <div className="min-w-0 flex-1">
                   <h2 className="text-sm font-semibold text-amber-950">
@@ -856,9 +885,10 @@ export function BreakfastOrderingApp({
                 <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
                   <button
                     type="button"
-                    onClick={addColleagueInline}
-                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-amber-400/80 bg-amber-50 text-lg font-semibold leading-none text-amber-950 hover:bg-amber-100"
-                    title="新增同事（於列表內輸入姓名）"
+                    onClick={() => void handleAddColleague()}
+                    disabled={addColleagueBusy}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-amber-400/80 bg-amber-50 text-lg font-semibold leading-none text-amber-950 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    title="新增同事（使用下方姓名欄）"
                     aria-label="新增同事"
                   >
                     ＋
@@ -883,10 +913,10 @@ export function BreakfastOrderingApp({
                   </button>
                 </div>
               </div>
-              <ul className="h-auto px-1 py-2 sm:px-3">
+              <ul className="h-auto flex-1 px-1 py-2 sm:px-3">
                 {personnel.length === 0 ? (
-                  <li className="list-none px-3 py-12 text-center text-sm text-amber-800/80">
-                    尚無同事列在此處；請使用頁面上方「新增同事」加入第一位。
+                  <li className="list-none px-3 py-10 text-center text-sm text-amber-800/80">
+                    尚無同事列在此處；請使用本欄最下方「新增同事」加入第一位。
                   </li>
                 ) : null}
                 {personnel.map((p) => {
@@ -895,7 +925,7 @@ export function BreakfastOrderingApp({
                   return (
                     <li key={p.id} className="border-b border-amber-100/80 last:border-b-0">
                       <div
-                        className={`flex min-w-0 flex-nowrap items-stretch gap-2 py-2.5 pl-1 pr-1 transition sm:gap-3 sm:pl-2 sm:pr-2 ${
+                        className={`grid grid-cols-3 gap-2 py-2.5 pl-1 pr-1 transition sm:gap-2.5 sm:pl-2 sm:pr-2 ${
                           active
                             ? 'bg-amber-100/90 ring-1 ring-inset ring-amber-300/80'
                             : 'hover:bg-amber-50/80'
@@ -909,14 +939,14 @@ export function BreakfastOrderingApp({
                             e.preventDefault()
                             cancelScheduledSelectAndToggleAbsent(p.id)
                           }}
-                          className="flex min-h-[3.25rem] w-16 shrink-0 cursor-pointer items-center justify-center rounded-lg border border-slate-200/80 bg-slate-100 px-1 py-2 text-center text-xl font-medium leading-tight text-slate-900 shadow-sm hover:bg-slate-200/70"
+                          className="flex min-h-[3.25rem] min-w-0 cursor-pointer flex-col items-center justify-center rounded-xl border border-slate-200/90 bg-slate-100 px-2 py-2 text-center text-lg font-semibold leading-snug text-slate-900 shadow-sm hover:bg-slate-200/70 sm:text-xl"
                         >
-                          <span className="line-clamp-2 w-full break-all text-center">
+                          <span className="line-clamp-3 w-full break-words text-center">
                             {p.name}
                           </span>
                         </button>
 
-                        <div className="flex min-h-[3.25rem] w-64 shrink-0 items-stretch rounded-lg border border-slate-200/80 bg-slate-100 px-2 py-1 shadow-sm">
+                        <div className="flex min-h-[3.25rem] min-w-0 items-stretch rounded-xl border border-slate-200/90 bg-slate-100 px-2 py-1.5 shadow-sm">
                           {p.isAbsent ? (
                             <div className="flex min-w-0 flex-1 items-center justify-center text-center">
                               <AbsentSlotIcon />
@@ -926,27 +956,27 @@ export function BreakfastOrderingApp({
                               type="button"
                               title={row.drinkName || undefined}
                               onClick={() => scheduleSelectPerson(p.id)}
-                              className="flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded-md py-1 text-center text-xl font-medium leading-snug text-slate-900 hover:bg-slate-200/60"
+                              className="flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded-lg py-1 text-center text-lg font-medium leading-snug text-slate-900 hover:bg-slate-200/60 sm:text-xl"
                             >
-                              <span className="block min-w-0 max-w-full truncate whitespace-nowrap text-center">
+                              <span className="block min-w-0 max-w-full break-words text-center">
                                 {row.drinkName}
                               </span>
                             </button>
                           )}
                         </div>
 
-                        <div className="flex min-h-[3.25rem] min-w-0 flex-1 items-stretch gap-1">
+                        <div className="flex min-h-[3.25rem] min-w-0 items-stretch gap-1">
                           {p.isAbsent ? (
-                            <div className="flex min-h-[3.25rem] min-w-0 flex-1 items-center justify-center rounded-lg border border-slate-200/80 bg-slate-100 px-3 py-2 text-center shadow-sm">
+                            <div className="flex min-h-[3.25rem] min-w-0 flex-1 items-center justify-center rounded-xl border border-slate-200/90 bg-slate-100 px-2 py-2 text-center shadow-sm">
                               <AbsentSlotIcon />
                             </div>
                           ) : (
                             <button
                               type="button"
                               onClick={() => scheduleSelectPerson(p.id)}
-                              className="flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded-lg border border-slate-200/80 bg-slate-100 px-3 py-2 text-center text-xl font-medium leading-snug text-slate-900 shadow-sm hover:bg-slate-200/70"
+                              className="flex min-h-[3.25rem] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-slate-200/90 bg-slate-100 px-2 py-2 text-center text-lg font-medium leading-snug text-slate-900 shadow-sm hover:bg-slate-200/70 sm:text-xl"
                             >
-                              <span className="block min-w-0 max-w-full truncate whitespace-nowrap text-center">
+                              <span className="block min-w-0 max-w-full break-words text-center">
                                 {row.mealLine}
                               </span>
                             </button>
@@ -974,7 +1004,7 @@ export function BreakfastOrderingApp({
 
               <div className="border-t border-amber-200/80 bg-amber-50/30 px-4 py-4 sm:px-5">
                 <h3 className="text-sm font-semibold text-amber-950">
-                  店家點餐彙整
+                  店家點餐彙整（餐點統計明細）
                 </h3>
                 <p className="mt-3 select-all text-lg leading-relaxed text-black">
                   {shopSummaryLine}
@@ -984,13 +1014,86 @@ export function BreakfastOrderingApp({
                   (不烤)。
                 </p>
               </div>
+
+              <section
+                className="border-t border-amber-200/90 bg-amber-50/40 p-4 sm:p-5"
+                aria-label="新增同事"
+              >
+                <h2 className="text-sm font-semibold text-amber-950">
+                  新增同事
+                </h2>
+                <p className="mt-1 text-xs text-amber-900/65">
+                  無論名單是否為空都可新增；姓名可留空，將以「新同事」建立。
+                </p>
+                <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+                  <label className="min-w-0 flex-1 text-sm font-medium text-slate-800">
+                    <span className="sr-only">新同事姓名</span>
+                    <input
+                      type="text"
+                      value={newColleagueName}
+                      onChange={(e) => setNewColleagueName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          void handleAddColleague()
+                        }
+                      }}
+                      placeholder="姓名（可留空）"
+                      autoComplete="off"
+                      disabled={addColleagueBusy}
+                      className="mt-1 w-full rounded-lg border border-amber-200 bg-white px-3 py-2.5 text-base text-slate-900 outline-none ring-amber-400/30 placeholder:text-slate-400 focus:ring-2 disabled:opacity-60"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    disabled={addColleagueBusy}
+                    onClick={() => void handleAddColleague()}
+                    className="shrink-0 rounded-xl bg-amber-600 px-5 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-60 sm:py-3"
+                  >
+                    {addColleagueBusy ? '新增中…' : '新增同事'}
+                  </button>
+                </div>
+                {addColleagueError ? (
+                  <p
+                    className="mt-2 rounded-lg border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-800"
+                    role="alert"
+                  >
+                    新增失敗：{addColleagueError}
+                  </p>
+                ) : null}
+                {personnel.length === 0 ? (
+                  <p className="mt-3 text-sm text-amber-900/75">
+                    目前尚無同事，請在此新增第一位；新增後會出現在上方列表。
+                  </p>
+                ) : null}
+              </section>
             </div>
           </aside>
 
-          {/* 右：當前編輯、指定餐點、隨機選餐 */}
-          <main className="flex min-w-0 flex-col gap-3 lg:col-span-4 xl:col-span-4">
+          {/* 右 1/3：操作專區（預算、點餐板、轉盤） */}
+          <main className="flex min-w-0 flex-col gap-3 lg:col-span-1">
             {selectedPerson && currentOrder ? (
               <>
+            <div className="rounded-2xl border border-amber-200/80 bg-white/95 p-4 shadow-sm">
+              <label className="flex flex-col gap-1 text-sm font-medium text-amber-950">
+                <span>全域預算（每人餐點上限）</span>
+                <span className="flex items-center gap-2">
+                  <span className="text-amber-800/60">$</span>
+                  <input
+                    type="text"
+                    inputMode="numeric"
+                    autoComplete="off"
+                    value={budgetInput}
+                    onChange={(e) => setBudgetInput(e.target.value)}
+                    className="w-full max-w-[10rem] appearance-none rounded-lg border border-amber-300 bg-white px-3 py-2 text-base font-semibold tabular-nums shadow-inner outline-none ring-amber-400/30 focus:ring-2 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                  />
+                </span>
+              </label>
+              <p className="mt-2 text-[11px] leading-snug text-amber-900/60">
+                單擊左側姓名選人、雙擊切換休假；此處編輯與轉盤。
+              </p>
+            </div>
+
             <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-start sm:justify-end">
               <div className="flex max-w-xl flex-col items-stretch gap-1 sm:items-end sm:ml-auto">
                 <button
@@ -1008,13 +1111,33 @@ export function BreakfastOrderingApp({
               </div>
             </div>
 
-            <section className="rounded-2xl border border-amber-200/80 bg-white/95 p-4 shadow-sm">
-              <h2 className="text-sm font-semibold text-amber-950">
-                當前點餐編輯
-              </h2>
-              <p className="mt-0.5 text-[11px] text-amber-900/55">
-                左側點姓名選取同事；以下修改即時生效。
-              </p>
+            <section
+              className="rounded-2xl border border-amber-200/80 bg-white/95 p-4 shadow-sm"
+              aria-label="點餐板 Order Board"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-2 border-b border-amber-100/90 pb-2">
+                <div>
+                  <h2 className="text-sm font-semibold text-amber-950">
+                    點餐板
+                  </h2>
+                  <p className="mt-0.5 text-[11px] text-amber-900/55">
+                    Order Board · 左側點姓名選取；以下即時生效。
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-[10px] font-medium uppercase tracking-wide text-amber-800/70">
+                    目前編輯
+                  </p>
+                  <p className="max-w-[10rem] truncate text-sm font-bold text-amber-950 sm:max-w-[14rem]">
+                    {selectedPerson.name}
+                  </p>
+                  {selectedPerson.isAbsent ? (
+                    <span className="mt-0.5 inline-block rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800">
+                      休假中
+                    </span>
+                  ) : null}
+                </div>
+              </div>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <label className="block text-sm font-medium text-slate-800">
                   同事姓名
@@ -1051,32 +1174,29 @@ export function BreakfastOrderingApp({
 
               <div className="mt-3 border-t border-amber-100/80 pt-3">
                 <p className="mb-2 text-xs font-medium text-slate-700">
-                  指定餐點
+                  指定餐點（手動輸入）
                 </p>
-                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-2">
-                  <select
-                    value={manualFoodId}
-                    onChange={(e) => setManualFoodId(e.target.value)}
-                    className="min-h-[2.25rem] min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-amber-400/30 focus:ring-2"
-                  >
-                    <option value="">請選擇餐點</option>
-                    {foodOptions.map((f) => (
-                      <option key={f.id} value={f.id}>
-                        {f.name} · ${f.price}
-                      </option>
-                    ))}
-                  </select>
-                  <button
-                    type="button"
-                    onClick={applyManualFood}
-                    disabled={!manualFoodId || !!selectedPerson.isAbsent}
-                    className="h-9 shrink-0 rounded-lg bg-amber-600 px-4 text-sm font-semibold text-white shadow-sm hover:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-50 sm:w-auto"
-                  >
-                    套用
-                  </button>
-                </div>
+                <label className="block text-sm font-medium text-slate-800">
+                  <span className="sr-only">指定餐點</span>
+                  <input
+                    type="text"
+                    value={manualFoodDraft}
+                    onChange={(e) => setManualFoodDraft(e.target.value)}
+                    onBlur={() => commitManualMealInput()}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        ;(e.target as HTMLInputElement).blur()
+                      }
+                    }}
+                    disabled={!!selectedPerson.isAbsent}
+                    placeholder="輸入任意餐點名稱，離開欄位時自動儲存"
+                    autoComplete="off"
+                    className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-base text-slate-900 outline-none ring-amber-400/30 placeholder:text-slate-400 focus:ring-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+                </label>
                 <p className="mt-1.5 text-[10px] text-slate-500">
-                  「一鍵淨空」不會清除此處已套用餐點；休假中無法套用。
+                  儲存後寫入資料庫並標為手動指定；清空並離開欄位可改回參與轉盤。「一鍵淨空」仍保留手動餐點；休假中無法編輯。
                 </p>
               </div>
 
@@ -1142,29 +1262,21 @@ export function BreakfastOrderingApp({
                 <p className="text-xs text-slate-500">
                   今日餐點：
                   <span className="font-medium text-slate-800">
-                    {selectedPerson.isAbsent
-                      ? '休假中'
-                      : selectedFood
-                        ? (() => {
-                            const base = formatFoodLabelForPerson(
-                              selectedFood,
-                              selectedPerson,
-                            )
-                            const fr = (currentOrder.foodRemark ?? '').trim()
-                            let s = `${base}（$${selectedFood.price}）`
-                            if (fr) s += `（${fr}）`
-                            return s
-                          })()
-                        : ''}
+                    {todayMealSummaryLine}
                   </span>
                 </p>
               </div>
             </section>
 
-            <section className="rounded-2xl border border-orange-200/70 bg-white/90 p-5 shadow-sm shadow-orange-900/5">
-              <h2 className="text-lg font-semibold text-orange-950">隨機選餐</h2>
+            <section
+              className="rounded-2xl border border-orange-200/70 bg-white/90 p-5 shadow-sm shadow-orange-900/5"
+              aria-label="Breakfast Wheel 隨機抽籤"
+            >
+              <h2 className="text-lg font-semibold text-orange-950">
+                隨機抽籤轉盤
+              </h2>
               <p className="mt-1 text-xs text-orange-900/55">
-                候選由預算與忌口過濾；大量品項時以文字跳動抽選，不使用圓餅圖。
+                Breakfast Wheel · 候選由預算與忌口過濾；飲料類不參與抽選；大量品項時以文字跳動抽選。
               </p>
               <div className="mt-3 rounded-2xl border-2 border-dashed border-orange-300/80 bg-gradient-to-b from-orange-50/90 to-amber-50/50 p-4">
                 <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2 text-sm">
@@ -1249,7 +1361,9 @@ export function BreakfastOrderingApp({
                   type="button"
                   onClick={startWheel}
                   disabled={
-                    spinPhase === 'spinning' || wheelCandidates.length === 0
+                    spinPhase === 'spinning' ||
+                    wheelCandidates.length === 0 ||
+                    !!currentOrder?.isManual
                   }
                   className="mt-4 w-full rounded-2xl bg-gradient-to-r from-orange-500 to-amber-500 py-3.5 text-base font-bold text-white shadow-lg shadow-orange-500/25 hover:from-orange-600 hover:to-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
                 >
@@ -1274,6 +1388,8 @@ export function BreakfastOrderingApp({
                   '文字高速切換中，即將開獎…'
                 ) : selectedPerson.isAbsent ? (
                   '休假中無法選餐，請雙擊姓名卡片恢復出勤。'
+                ) : currentOrder?.isManual ? (
+                  '已手動指定餐點；若要使用轉盤請先清空「指定餐點」欄位並離開以儲存。'
                 ) : wheelCandidates.length === 0 ? (
                   '預算不足或無符合餐點，請調整預算、飲料或忌口後再試。'
                 ) : (
@@ -1283,14 +1399,42 @@ export function BreakfastOrderingApp({
             </section>
               </>
             ) : (
-              <div className="flex min-h-[min(28rem,55vh)] flex-col justify-center rounded-2xl border border-dashed border-amber-300/80 bg-amber-50/50 px-5 py-12 text-center shadow-inner">
-                <p className="text-base font-semibold text-amber-950">
-                  尚無可編輯的同事
-                </p>
-                <p className="mt-3 text-sm leading-relaxed text-amber-900/70">
-                  請先使用頁面上方「新增同事」加入至少一位同事，左側列表出現資料後，即可在此編輯飲料、餐點與隨機選餐。
-                </p>
-              </div>
+              <>
+                <div className="rounded-2xl border border-amber-200/80 bg-white/95 p-4 shadow-sm">
+                  <label className="flex flex-col gap-1 text-sm font-medium text-amber-950">
+                    <span>全域預算（每人餐點上限）</span>
+                    <span className="flex items-center gap-2">
+                      <span className="text-amber-800/60">$</span>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete="off"
+                        value={budgetInput}
+                        onChange={(e) => setBudgetInput(e.target.value)}
+                        className="w-full max-w-[10rem] appearance-none rounded-lg border border-amber-300 bg-white px-3 py-2 text-base font-semibold tabular-nums shadow-inner outline-none ring-amber-400/30 focus:ring-2 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                      />
+                    </span>
+                  </label>
+                </div>
+                <div className="flex min-h-[min(24rem,50vh)] flex-col gap-4">
+                  <div className="rounded-2xl border border-dashed border-amber-300/80 bg-gradient-to-br from-amber-50/90 to-orange-50/50 px-5 py-8 shadow-inner">
+                    <p className="text-base font-semibold text-amber-950">
+                      尚未選取同事
+                    </p>
+                    <p className="mt-2 text-sm leading-relaxed text-amber-900/75">
+                      請在左側「同事列表」點擊姓名；若尚無資料，請先於左欄最下方輸入姓名並按「新增同事」。
+                    </p>
+                  </div>
+                  <div className="rounded-2xl border border-slate-200/80 bg-white/80 px-5 py-6 shadow-sm">
+                    <p className="text-sm font-medium text-slate-800">
+                      選取後可在此編輯
+                    </p>
+                    <p className="mt-2 text-sm leading-relaxed text-slate-600">
+                      此欄為點餐板（固定飲料、忌口、今日餐點與備註）與隨機轉盤。飲料品項不會納入轉盤候選。
+                    </p>
+                  </div>
+                </div>
+              </>
             )}
           </main>
         </div>

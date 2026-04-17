@@ -23,6 +23,24 @@ export type ColleagueRow = {
 /** upsert / insert 時不送 created_at */
 export type ColleagueUpsertPayload = Omit<ColleagueRow, 'created_at'>
 
+/**
+ * insert() 僅允許資料表實際存在的欄位（不含 created_at），避免多餘屬性導致 PostgREST 拒絕。
+ * 與 colleagues：id, name, fixed_drink, requires_untoasted_toast, dislike_list, is_absent,
+ * current_food, current_note, internal_note, is_manual
+ */
+export type ColleagueInsertPayload = {
+  id: string
+  name: string
+  fixed_drink: string | null
+  requires_untoasted_toast: boolean
+  dislike_list: string[]
+  is_absent: boolean
+  current_food: string | null
+  current_note: string | null
+  internal_note: string | null
+  is_manual: boolean
+}
+
 const COLLEAGUE_SELECT =
   'id, name, fixed_drink, requires_untoasted_toast, dislike_list, is_absent, current_food, current_note, internal_note, is_manual'
 
@@ -106,8 +124,39 @@ export async function upsertColleagueRows(rows: ColleagueUpsertPayload[]): Promi
   if (error) throw error
 }
 
-export async function insertColleagueRow(row: ColleagueUpsertPayload): Promise<void> {
-  const { error } = await supabase.from('colleagues').insert(row)
+/** 新建同事一筆 insert（僅含資料表欄位，無其他屬性） */
+export function buildNewColleagueInsertPayload(
+  id: string,
+  name: string,
+): ColleagueInsertPayload {
+  return {
+    id,
+    name,
+    fixed_drink: null,
+    requires_untoasted_toast: false,
+    dislike_list: [],
+    is_absent: false,
+    current_food: null,
+    current_note: null,
+    internal_note: null,
+    is_manual: false,
+  }
+}
+
+export async function insertColleagueRow(row: ColleagueInsertPayload): Promise<void> {
+  const payload: ColleagueInsertPayload = {
+    id: row.id,
+    name: row.name,
+    fixed_drink: row.fixed_drink,
+    requires_untoasted_toast: row.requires_untoasted_toast,
+    dislike_list: row.dislike_list,
+    is_absent: row.is_absent,
+    current_food: row.current_food,
+    current_note: row.current_note,
+    internal_note: row.internal_note,
+    is_manual: row.is_manual,
+  }
+  const { error } = await supabase.from('colleagues').insert(payload)
   if (error) throw error
 }
 

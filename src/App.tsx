@@ -9,7 +9,6 @@ import {
   deleteMenuItemsByCategoryName,
   fetchMenuFromSupabase,
   insertMenuItemRow,
-  menuItemToInsertPayload,
 } from './lib/menuSupabase'
 import type { Order, Personnel } from './domain/breakfastTypes'
 
@@ -44,6 +43,31 @@ function App() {
   const [orderPersonnel, setOrderPersonnel] = useState<Personnel[]>([])
   const [orderOrders, setOrderOrders] = useState<Order[]>([])
   const [orderDataKey, setOrderDataKey] = useState(0)
+  /** 新增同事並 refetch 後，讓點餐頁選中該員 */
+  const [selectPersonIdOnMount, setSelectPersonIdOnMount] = useState<
+    string | undefined
+  >(undefined)
+
+  const loadOrderTabData = useCallback(async () => {
+    const [{ categories: c, menu: m }, col] = await Promise.all([
+      fetchMenuFromSupabase(),
+      fetchColleaguesFromSupabase(),
+    ])
+    setCategories(c)
+    setMenu(m)
+    setOrderPersonnel(col.personnel)
+    setOrderOrders(col.orders)
+  }, [])
+
+  const handleColleaguesSynced = useCallback(
+    async (opts: { newPersonId: string }) => {
+      setSelectPersonIdOnMount(opts.newPersonId)
+      await loadOrderTabData()
+      setOrderDataKey((k) => k + 1)
+      window.setTimeout(() => setSelectPersonIdOnMount(undefined), 0)
+    },
+    [loadOrderTabData],
+  )
 
   useEffect(() => {
     if (activeTab !== 'menu') return
@@ -75,15 +99,8 @@ function App() {
     setOrderTabError(null)
     void (async () => {
       try {
-        const [{ categories: c, menu: m }, col] = await Promise.all([
-          fetchMenuFromSupabase(),
-          fetchColleaguesFromSupabase(),
-        ])
+        await loadOrderTabData()
         if (cancelled) return
-        setCategories(c)
-        setMenu(m)
-        setOrderPersonnel(col.personnel)
-        setOrderOrders(col.orders)
         setOrderDataKey((k) => k + 1)
       } catch (e) {
         if (cancelled) return
@@ -95,22 +112,20 @@ function App() {
     return () => {
       cancelled = true
     }
-  }, [activeTab])
+  }, [activeTab, loadOrderTabData])
 
   const onAddMenuItem = useCallback(
-    async (args: { item: MenuItem }) => {
-      const catId = args.item.categoryId
-      const nextCategories = categories.some((c) => c.id === catId)
-        ? categories
-        : [...categories, { id: catId, name: catId }]
-      if (nextCategories.length > categories.length) {
-        setCategories(nextCategories)
-      }
-      const row = menuItemToInsertPayload(args.item, nextCategories)
-      await insertMenuItemRow(row)
-      setMenu((prev) => [...prev, args.item])
+    async (args: { name: string; price: number; category: string }) => {
+      await insertMenuItemRow({
+        name: args.name,
+        price: Number(args.price),
+        category: args.category,
+      })
+      const fresh = await fetchMenuFromSupabase()
+      setCategories(fresh.categories)
+      setMenu(fresh.menu)
     },
-    [categories],
+    [],
   )
 
   const onRemoveMenuItem = useCallback(async (itemId: string) => {
@@ -194,6 +209,8 @@ function App() {
               categories={categories}
               initialPersonnel={orderPersonnel}
               initialOrders={orderOrders}
+              selectPersonIdOnMount={selectPersonIdOnMount}
+              onColleaguesSynced={handleColleaguesSynced}
             />
           )
         ) : menuTabLoading ? (
@@ -209,7 +226,6 @@ function App() {
         ) : (
           <div className="border-t border-emerald-100/80 bg-emerald-50/20 px-4 py-6 sm:px-6 lg:px-10">
             <MenuManagementPanel
-              categories={categories}
               menu={menu}
               onAddItem={onAddMenuItem}
               onRemoveItem={onRemoveMenuItem}

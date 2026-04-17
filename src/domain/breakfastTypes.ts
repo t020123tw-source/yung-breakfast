@@ -16,6 +16,11 @@ export type Personnel = {
 export type Order = {
   userId: string
   selectedDrinkId: string | null
+  /**
+   * 對應 colleagues.current_food。
+   * - `isManual === true`：為使用者手動輸入的餐點名稱（任意文字）。
+   * - `isManual === false`：為菜單品項 id（轉盤／先前自動選餐）。
+   */
   selectedFoodId: string | null
   isManual: boolean
   /** 餐點備註（對外：顯示於同事列表與店家彙整） */

@@ -13,10 +13,12 @@ export type MenuItemRow = {
   created_at?: string
 }
 
-export type MenuItemInsertPayload = Pick<
-  MenuItemRow,
-  'id' | 'name' | 'price' | 'category'
->
+/** insert 時僅送 name / price / category（id、created_at 由資料庫處理） */
+export type MenuItemMinimalInsert = {
+  name: string
+  price: number
+  category: string
+}
 
 function categoryDefFromLabel(label: string): MenuCategoryDef {
   return { id: label, name: label }
@@ -43,22 +45,6 @@ export function menuFromRows(rows: MenuItemRow[]): {
   return { categories, menu }
 }
 
-export function menuItemToInsertPayload(
-  item: MenuItem,
-  categories: MenuCategoryDef[],
-): MenuItemInsertPayload {
-  const c = categories.find((x) => x.id === item.categoryId)
-  if (!c) {
-    throw new Error(`找不到類別：${item.categoryId}`)
-  }
-  return {
-    id: item.id,
-    name: item.name,
-    price: item.price,
-    category: c.name,
-  }
-}
-
 export async function fetchMenuFromSupabase(): Promise<{
   categories: MenuCategoryDef[]
   menu: MenuItem[]
@@ -74,8 +60,19 @@ export async function fetchMenuFromSupabase(): Promise<{
   return menuFromRows(rows)
 }
 
-export async function insertMenuItemRow(row: MenuItemInsertPayload): Promise<void> {
-  const { error } = await supabase.from('menu_items').insert(row)
+export async function insertMenuItemRow(row: MenuItemMinimalInsert): Promise<void> {
+  const priceNum = Number(row.price)
+  const priceInt = Number.isFinite(priceNum)
+    ? Math.min(999999, Math.max(0, Math.round(priceNum)))
+    : 0
+  const payload: MenuItemMinimalInsert = {
+    name: String(row.name ?? '').trim(),
+    price: priceInt,
+    category: String(row.category ?? '').trim(),
+  }
+  if (!payload.name) throw new Error('餐點名稱不可為空')
+  if (!payload.category) throw new Error('類別不可為空')
+  const { error } = await supabase.from('menu_items').insert(payload)
   if (error) throw error
 }
 
