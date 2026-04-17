@@ -3,8 +3,6 @@ import {
   useEffect,
   useMemo,
   useState,
-  type Dispatch,
-  type SetStateAction,
 } from 'react'
 import {
   type MenuCategoryDef,
@@ -18,9 +16,13 @@ const NEW_CAT_VALUE = '__new_category__'
 
 type Props = {
   categories: MenuCategoryDef[]
-  setCategories: Dispatch<SetStateAction<MenuCategoryDef[]>>
   menu: MenuItem[]
-  setMenu: Dispatch<SetStateAction<MenuItem[]>>
+  onAddItem: (args: {
+    newCategory?: MenuCategoryDef
+    item: MenuItem
+  }) => Promise<void>
+  onRemoveItem: (itemId: string) => Promise<void>
+  onRemoveCategory: (categoryId: string) => Promise<void>
 }
 
 function categoryEmoji(c: MenuCategoryDef): string {
@@ -31,9 +33,10 @@ function categoryEmoji(c: MenuCategoryDef): string {
 
 export function MenuManagementPanel({
   categories,
-  setCategories,
   menu,
-  setMenu,
+  onAddItem,
+  onRemoveItem,
+  onRemoveCategory,
 }: Props) {
   const [itemName, setItemName] = useState('')
   const [itemPrice, setItemPrice] = useState('30')
@@ -44,6 +47,7 @@ export function MenuManagementPanel({
   const [newCatName, setNewCatName] = useState('')
   const [newCatDrink, setNewCatDrink] = useState(false)
   const [newCatToast, setNewCatToast] = useState(false)
+  const [saving, setSaving] = useState(false)
 
   useEffect(() => {
     if (categoryChoice === NEW_CAT_VALUE) return
@@ -68,44 +72,39 @@ export function MenuManagementPanel({
   )
 
   const removeCategory = useCallback(
-    (catId: string) => {
-      setMenu((prev) => prev.filter((m) => m.categoryId !== catId))
-      setCategories((prev) => {
-        const next = prev.filter((c) => c.id !== catId)
-        setCategoryChoice((cur) => {
-          if (cur !== catId) return cur
-          return next[0]?.id ?? NEW_CAT_VALUE
-        })
-        return next
-      })
+    async (catId: string) => {
+      if (saving) return
+      setSaving(true)
+      try {
+        await onRemoveCategory(catId)
+      } catch (e) {
+        console.error(e)
+      } finally {
+        setSaving(false)
+      }
     },
-    [setMenu, setCategories],
+    [onRemoveCategory, saving],
   )
 
-  const addItem = useCallback(() => {
+  const addItem = useCallback(async () => {
+    if (saving) return
     const name = itemName.trim()
     if (!name) return
 
+    let newCategory: MenuCategoryDef | undefined
     let targetCategoryId = categoryChoice
 
     if (categoryChoice === NEW_CAT_VALUE) {
       const cn = newCatName.trim()
       if (!cn || (newCatDrink && newCatToast)) return
       const id = newCategoryId()
-      setCategories((prev) => [
-        ...prev,
-        {
-          id,
-          name: cn,
-          isDrink: newCatDrink,
-          isToast: newCatToast && !newCatDrink,
-        },
-      ])
+      newCategory = {
+        id,
+        name: cn,
+        isDrink: newCatDrink,
+        isToast: newCatToast && !newCatDrink,
+      }
       targetCategoryId = id
-      setNewCatName('')
-      setNewCatDrink(false)
-      setNewCatToast(false)
-      setCategoryChoice(id)
     }
 
     if (!targetCategoryId || targetCategoryId === NEW_CAT_VALUE) return
@@ -115,28 +114,53 @@ export function MenuManagementPanel({
       Math.min(999999, parseInt(itemPrice.replace(/\D/g, ''), 10) || 0),
     )
     const id = newMenuItemId()
-    setMenu((prev) => [
-      ...prev,
-      { id, name, price, categoryId: targetCategoryId },
-    ])
-    setItemName('')
-    setItemPrice(String(price))
+    const item: MenuItem = {
+      id,
+      name,
+      price,
+      categoryId: targetCategoryId,
+    }
+
+    setSaving(true)
+    try {
+      await onAddItem({ newCategory, item })
+      if (categoryChoice === NEW_CAT_VALUE) {
+        setNewCatName('')
+        setNewCatDrink(false)
+        setNewCatToast(false)
+        setCategoryChoice(targetCategoryId)
+      }
+      setItemName('')
+      setItemPrice(String(price))
+    } catch (e) {
+      console.error(e)
+    } finally {
+      setSaving(false)
+    }
   }, [
+    saving,
     itemName,
     itemPrice,
     categoryChoice,
     newCatName,
     newCatDrink,
     newCatToast,
-    setCategories,
-    setMenu,
+    onAddItem,
   ])
 
   const removeItem = useCallback(
-    (itemId: string) => {
-      setMenu((prev) => prev.filter((m) => m.id !== itemId))
+    async (itemId: string) => {
+      if (saving) return
+      setSaving(true)
+      try {
+        await onRemoveItem(itemId)
+      } catch (e) {
+        console.error(e)
+      } finally {
+        setSaving(false)
+      }
     },
-    [setMenu],
+    [onRemoveItem, saving],
   )
 
   return (
@@ -152,7 +176,8 @@ export function MenuManagementPanel({
                 value={categoryChoice}
                 onChange={(e) => setCategoryChoice(e.target.value)}
                 title="類別"
-                className="h-10 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none ring-emerald-400/20 focus:ring-2"
+                disabled={saving}
+                className="h-10 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none ring-emerald-400/20 focus:ring-2 disabled:opacity-50"
               >
                 {categoriesDisplayOrder.map((c) => (
                   <option key={c.id} value={c.id}>
@@ -170,7 +195,8 @@ export function MenuManagementPanel({
                 value={itemName}
                 onChange={(e) => setItemName(e.target.value)}
                 placeholder="餐點名稱"
-                className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm text-slate-900 outline-none ring-emerald-400/20 placeholder:text-slate-400 focus:ring-2"
+                disabled={saving}
+                className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm text-slate-900 outline-none ring-emerald-400/20 placeholder:text-slate-400 focus:ring-2 disabled:opacity-50"
               />
             </div>
 
@@ -180,21 +206,23 @@ export function MenuManagementPanel({
                 value={itemPrice}
                 onChange={(e) => setItemPrice(e.target.value)}
                 placeholder="金額"
-                className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm tabular-nums text-slate-900 outline-none ring-emerald-400/20 placeholder:text-slate-400 focus:ring-2"
+                disabled={saving}
+                className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm tabular-nums text-slate-900 outline-none ring-emerald-400/20 placeholder:text-slate-400 focus:ring-2 disabled:opacity-50"
               />
             </div>
 
             <button
               type="button"
-              onClick={addItem}
+              onClick={() => void addItem()}
               disabled={
+                saving ||
                 !itemName.trim() ||
                 (categoryChoice === NEW_CAT_VALUE &&
                   (!newCatName.trim() || (newCatDrink && newCatToast)))
               }
               className="h-10 w-auto shrink-0 whitespace-nowrap rounded-lg bg-emerald-600 px-6 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
             >
-              + 新增
+              {saving ? '同步中…' : '+ 新增'}
             </button>
           </div>
 
@@ -204,12 +232,14 @@ export function MenuManagementPanel({
                 value={newCatName}
                 onChange={(e) => setNewCatName(e.target.value)}
                 placeholder="新類別名稱"
-                className="h-9 min-w-[10rem] flex-1 rounded border border-slate-200 bg-white px-2.5 text-sm"
+                disabled={saving}
+                className="h-9 min-w-[10rem] flex-1 rounded border border-slate-200 bg-white px-2.5 text-sm disabled:opacity-50"
               />
               <label className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-slate-700">
                 <input
                   type="checkbox"
                   checked={newCatDrink}
+                  disabled={saving}
                   onChange={(e) => {
                     setNewCatDrink(e.target.checked)
                     if (e.target.checked) setNewCatToast(false)
@@ -222,6 +252,7 @@ export function MenuManagementPanel({
                 <input
                   type="checkbox"
                   checked={newCatToast}
+                  disabled={saving}
                   onChange={(e) => {
                     setNewCatToast(e.target.checked)
                     if (e.target.checked) setNewCatDrink(false)
@@ -258,8 +289,9 @@ export function MenuManagementPanel({
                 </p>
                 <button
                   type="button"
-                  onClick={() => removeCategory(c.id)}
-                  className="shrink-0 text-[10px] font-semibold text-rose-700 hover:underline sm:text-xs"
+                  onClick={() => void removeCategory(c.id)}
+                  disabled={saving}
+                  className="shrink-0 text-[10px] font-semibold text-rose-700 hover:underline disabled:opacity-40 sm:text-xs"
                 >
                   刪類別
                 </button>
@@ -282,8 +314,9 @@ export function MenuManagementPanel({
                       </span>
                       <button
                         type="button"
-                        onClick={() => removeItem(it.id)}
-                        className="shrink-0 rounded border border-rose-200/90 bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800 hover:bg-rose-100 sm:text-xs"
+                        onClick={() => void removeItem(it.id)}
+                        disabled={saving}
+                        className="shrink-0 rounded border border-rose-200/90 bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800 hover:bg-rose-100 disabled:opacity-40 sm:text-xs"
                       >
                         刪除
                       </button>

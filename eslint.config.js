@@ -19,5 +19,9 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      // 本專案多處以 effect 同步菜單／人員派生 UI；屬刻意設計而非外部訂閱
+      'react-hooks/set-state-in-effect': 'off',
+    },
   },
 ])

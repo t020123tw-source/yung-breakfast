@@ -5,8 +5,6 @@ import {
   useRef,
   useState,
   type ChangeEvent,
-  type Dispatch,
-  type SetStateAction,
 } from 'react'
 import {
   type MenuCategoryDef,
@@ -18,93 +16,24 @@ import {
   isMealItem,
   isToastItem,
 } from '../data/menuData'
+import type { Order, Personnel } from '../domain/breakfastTypes'
+import {
+  colleagueRowFromPersonnelAndOrder,
+  deleteColleagueById,
+  insertColleagueRow,
+  upsertColleagueRows,
+} from '../lib/colleagueSupabase'
 import { DislikeSettingsModal } from './DislikeSettingsModal'
 
 export type { MenuItem, MenuCategoryDef } from '../data/menuData'
+export type { Order, Personnel } from '../domain/breakfastTypes'
 
 export type BreakfastOrderingAppProps = {
   menu: MenuItem[]
-  setMenu: Dispatch<SetStateAction<MenuItem[]>>
   categories: MenuCategoryDef[]
-  setCategories: Dispatch<SetStateAction<MenuCategoryDef[]>>
+  initialPersonnel: Personnel[]
+  initialOrders: Order[]
 }
-
-/** 同事（不含個人預算；固定飲料可為 null＝無飲料） */
-export type Personnel = {
-  id: string
-  name: string
-  fixedDrinkId: string | null
-  dislikedFoodIds: string[]
-  /** 其他備註（僅內部查看；不顯示於同事列表與店家彙整） */
-  extraRemark?: string
-  /** 勾選後，該員點吐司類餐點時自動加 (不烤) */
-  requiresUntoastedToast?: boolean
-  /** 休假：飲料／餐點格顯示紅底白叉圖示，不列入店家彙整 */
-  isAbsent?: boolean
-}
-
-/** 今日訂單（每人一筆） */
-export type Order = {
-  userId: string
-  selectedDrinkId: string | null
-  selectedFoodId: string | null
-  isManual: boolean
-  /** 餐點備註（對外：顯示於同事列表與店家彙整） */
-  foodRemark?: string
-}
-
-const MOCK_PERSONNEL: Personnel[] = [
-  {
-    id: 'p1',
-    name: '小安',
-    fixedDrinkId: 'drink-americano',
-    dislikedFoodIds: ['food-hash-tower'],
-    extraRemark: '蛋要全熟',
-    requiresUntoastedToast: true,
-  },
-  {
-    id: 'p2',
-    name: '阿哲',
-    fixedDrinkId: 'drink-soy-milk-ice',
-    dislikedFoodIds: ['food-pepper-noodle-egg', 'food-plain-omelet'],
-    requiresUntoastedToast: true,
-  },
-  { id: 'p3', name: '怡君', fixedDrinkId: 'drink-iced-milk-tea-lg', dislikedFoodIds: [] },
-  {
-    id: 'p4',
-    name: '冠宇',
-    fixedDrinkId: null,
-    dislikedFoodIds: ['food-plain-omelet'],
-    isAbsent: true,
-  },
-  {
-    id: 'p5',
-    name: '書緯',
-    fixedDrinkId: 'drink-fresh-milk-tea-lg-ns',
-    dislikedFoodIds: ['food-crispy-chicken-burger'],
-  },
-  {
-    id: 'p6',
-    name: '品妍',
-    fixedDrinkId: 'drink-fresh-milk-tea-lg-ns',
-    dislikedFoodIds: ['food-hash-tower', 'food-turnip-cake'],
-  },
-  { id: 'p7', name: '志豪', fixedDrinkId: null, dislikedFoodIds: [] },
-  {
-    id: 'p8',
-    name: '婉婷',
-    fixedDrinkId: 'drink-soy-milk-ice',
-    dislikedFoodIds: ['food-pepper-noodle-egg'],
-  },
-  { id: 'p9', name: '承恩', fixedDrinkId: null, dislikedFoodIds: ['food-plain-omelet'] },
-  {
-    id: 'p10',
-    name: '詩涵',
-    fixedDrinkId: 'drink-iced-milk-tea-lg',
-    dislikedFoodIds: ['food-plain-omelet', 'food-hash-tower'],
-  },
-  { id: 'p11', name: '子晴', fixedDrinkId: 'drink-iced-milk-tea-lg', dislikedFoodIds: [] },
-]
 
 function buildMenuMap(menu: MenuItem[]): Map<string, MenuItem> {
   const m = new Map<string, MenuItem>()
@@ -154,16 +83,6 @@ function AbsentSlotIcon() {
       </svg>
     </span>
   )
-}
-
-function initialOrders(people: Personnel[]): Order[] {
-  return people.map((p) => ({
-    userId: p.id,
-    selectedDrinkId: p.fixedDrinkId,
-    selectedFoodId: null,
-    isManual: false,
-    foodRemark: undefined,
-  }))
 }
 
 function buildFoodLineForShop(
@@ -217,17 +136,71 @@ function buildShopSummaryLine(
 export function BreakfastOrderingApp({
   menu,
   categories,
+  initialPersonnel,
+  initialOrders,
 }: BreakfastOrderingAppProps) {
   const [budgetInput, setBudgetInput] = useState('120')
   const globalBudget = useMemo(() => {
     const n = parseInt(budgetInput.replace(/\D/g, ''), 10)
     return Number.isFinite(n) ? Math.min(999999, Math.max(0, n)) : 0
   }, [budgetInput])
-  const [personnel, setPersonnel] = useState<Personnel[]>(MOCK_PERSONNEL)
-  const [orders, setOrders] = useState<Order[]>(() => initialOrders(MOCK_PERSONNEL))
+  const [personnel, setPersonnel] = useState<Personnel[]>(initialPersonnel)
+  const [orders, setOrders] = useState<Order[]>(initialOrders)
   const [selectedPersonId, setSelectedPersonId] = useState<string>(
-    MOCK_PERSONNEL[0]?.id ?? '',
+    initialPersonnel[0]?.id ?? '',
   )
+
+  const persistIdsRef = useRef(new Set<string>())
+  const [persistTick, setPersistTick] = useState(0)
+
+  const schedulePersist = useCallback((userId: string) => {
+    persistIdsRef.current.add(userId)
+    setPersistTick((n) => n + 1)
+  }, [])
+
+  const persistDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null,
+  )
+  const schedulePersistDebounced = useCallback(
+    (userId: string, ms = 420) => {
+      if (persistDebounceTimerRef.current) {
+        clearTimeout(persistDebounceTimerRef.current)
+      }
+      persistDebounceTimerRef.current = setTimeout(() => {
+        persistDebounceTimerRef.current = null
+        schedulePersist(userId)
+      }, ms)
+    },
+    [schedulePersist],
+  )
+
+  useEffect(() => {
+    return () => {
+      if (persistDebounceTimerRef.current) {
+        clearTimeout(persistDebounceTimerRef.current)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    const ids = [...persistIdsRef.current]
+    persistIdsRef.current.clear()
+    if (ids.length === 0) return
+    void (async () => {
+      try {
+        const rows = ids
+          .map((id) => {
+            const p = personnel.find((x) => x.id === id)
+            const o = orders.find((x) => x.userId === id)
+            return p ? colleagueRowFromPersonnelAndOrder(p, o) : null
+          })
+          .filter((r) => r != null)
+        await upsertColleagueRows(rows)
+      } catch (e) {
+        console.error(e)
+      }
+    })()
+  }, [personnel, orders, persistTick])
 
   const [manualFoodId, setManualFoodId] = useState('')
   const [foodRemarkDraft, setFoodRemarkDraft] = useState('')
@@ -311,6 +284,7 @@ export function BreakfastOrderingApp({
   useEffect(() => {
     const ids = new Set(menu.map((x) => x.id))
     setPersonnel((prev) => {
+      const touched = new Set<string>()
       let any = false
       const next = prev.map((p) => {
         let fd = p.fixedDrinkId
@@ -325,11 +299,18 @@ export function BreakfastOrderingApp({
           dis.some((id, i) => id !== p.dislikedFoodIds[i])
         if (!fdChanged && !disChanged) return p
         any = true
+        touched.add(p.id)
         return { ...p, fixedDrinkId: fd, dislikedFoodIds: dis }
       })
+      if (any) {
+        queueMicrotask(() => {
+          for (const id of touched) schedulePersist(id)
+        })
+      }
       return any ? next : prev
     })
     setOrders((prev) => {
+      const touched = new Set<string>()
       let any = false
       const next = prev.map((o) => {
         const sf =
@@ -342,11 +323,17 @@ export function BreakfastOrderingApp({
             : null
         if (sf === o.selectedFoodId && sd === o.selectedDrinkId) return o
         any = true
+        touched.add(o.userId)
         return { ...o, selectedFoodId: sf, selectedDrinkId: sd }
       })
+      if (any) {
+        queueMicrotask(() => {
+          for (const id of touched) schedulePersist(id)
+        })
+      }
       return any ? next : prev
     })
-  }, [menu, categories, categoryMap, menuMap])
+  }, [menu, categories, categoryMap, menuMap, schedulePersist])
 
   useEffect(() => {
     const o = orders.find((x) => x.userId === selectedPersonId)
@@ -375,11 +362,19 @@ export function BreakfastOrderingApp({
     }
   }, [])
 
-  const patchPersonnel = useCallback((id: string, patch: Partial<Personnel>) => {
-    setPersonnel((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, ...patch } : p)),
-    )
-  }, [])
+  const patchPersonnel = useCallback(
+    (id: string, patch: Partial<Personnel>) => {
+      setPersonnel((prev) =>
+        prev.map((p) => (p.id === id ? { ...p, ...patch } : p)),
+      )
+      const debounced =
+        Object.prototype.hasOwnProperty.call(patch, 'name') ||
+        Object.prototype.hasOwnProperty.call(patch, 'extraRemark')
+      if (debounced) schedulePersistDebounced(id)
+      else schedulePersist(id)
+    },
+    [schedulePersist, schedulePersistDebounced],
+  )
 
   /** 餐點備註（對外）：同步至訂單，供左側列表與店家彙整使用 */
   const onFoodRemarkInputChange = useCallback(
@@ -394,8 +389,9 @@ export function BreakfastOrderingApp({
             : o,
         ),
       )
+      schedulePersistDebounced(selectedPersonId)
     },
-    [selectedPersonId],
+    [selectedPersonId, schedulePersistDebounced],
   )
 
   const toggleDislikedFood = useCallback(
@@ -413,8 +409,9 @@ export function BreakfastOrderingApp({
           }
         }),
       )
+      schedulePersist(selectedPersonId)
     },
-    [selectedPersonId],
+    [selectedPersonId, schedulePersist],
   )
 
   const toggleCategoryAllDisliked = useCallback(
@@ -439,15 +436,22 @@ export function BreakfastOrderingApp({
           return { ...p, dislikedFoodIds: [...next] }
         }),
       )
+      schedulePersist(selectedPersonId)
     },
-    [selectedPersonId, menu],
+    [selectedPersonId, menu, schedulePersist],
   )
 
   /** 刪除目前選中的同事（標題列「－」；至少保留一人） */
-  const deleteSelectedColleague = useCallback(() => {
+  const deleteSelectedColleague = useCallback(async () => {
     if (personnel.length <= 1 || !selectedPersonId) return
     if (!window.confirm('確定從名單移除此同事？')) return
     const id = selectedPersonId
+    try {
+      await deleteColleagueById(id)
+    } catch (e) {
+      console.error(e)
+      return
+    }
     setPersonnel((prev) => {
       const next = prev.filter((p) => p.id !== id)
       setSelectedPersonId(next[0]?.id ?? '')
@@ -456,20 +460,24 @@ export function BreakfastOrderingApp({
     setOrders((prev) => prev.filter((o) => o.userId !== id))
   }, [personnel.length, selectedPersonId])
 
-  const clearPersonMeal = useCallback((userId: string) => {
-    setOrders((prev) =>
-      prev.map((o) =>
-        o.userId === userId
-          ? {
-              ...o,
-              selectedFoodId: null,
-              foodRemark: undefined,
-              isManual: false,
-            }
-          : o,
-      ),
-    )
-  }, [])
+  const clearPersonMeal = useCallback(
+    (userId: string) => {
+      setOrders((prev) =>
+        prev.map((o) =>
+          o.userId === userId
+            ? {
+                ...o,
+                selectedFoodId: null,
+                foodRemark: undefined,
+                isManual: false,
+              }
+            : o,
+        ),
+      )
+      schedulePersist(userId)
+    },
+    [schedulePersist],
+  )
 
   const applyManualFood = useCallback(() => {
     if (!selectedPersonId || !manualFoodId) return
@@ -487,19 +495,32 @@ export function BreakfastOrderingApp({
           : o,
       ),
     )
-  }, [selectedPersonId, manualFoodId, foodRemarkDraft, personnel])
+    schedulePersist(selectedPersonId)
+  }, [
+    selectedPersonId,
+    manualFoodId,
+    foodRemarkDraft,
+    personnel,
+    schedulePersist,
+  ])
 
   /**
    * 清空所有人非指定套用的餐點，並將全員恢復為出勤（取消休假）。
    */
   const clearAllWheelFoodsGlobally = useCallback(() => {
-    setOrders((prev) =>
-      prev.map((o) =>
-        o.isManual ? o : { ...o, selectedFoodId: null, foodRemark: undefined },
-      ),
+    const nextP = personnel.map((p) => ({ ...p, isAbsent: false }))
+    const nextO = orders.map((o) =>
+      o.isManual ? o : { ...o, selectedFoodId: null, foodRemark: undefined },
     )
-    setPersonnel((prev) => prev.map((p) => ({ ...p, isAbsent: false })))
-  }, [])
+    setPersonnel(nextP)
+    setOrders(nextO)
+    void upsertColleagueRows(
+      nextO.map((o) => {
+        const p = nextP.find((x) => x.id === o.userId)!
+        return colleagueRowFromPersonnelAndOrder(p, o)
+      }),
+    )
+  }, [personnel, orders])
 
   /**
    * 一鍵全員轉盤：略過休假與手動指定；其餘依與單人轉盤相同規則隨機配餐。
@@ -516,44 +537,49 @@ export function BreakfastOrderingApp({
     setLastSpinFoodId(null)
     setCelebratePick(false)
 
-    setOrders((prev) =>
-      prev.map((o) => {
-        const p = personnel.find((x) => x.id === o.userId)
-        if (!p || p.isAbsent) return o
-        if (o.isManual) return o
+    const nextO = orders.map((o) => {
+      const p = personnel.find((x) => x.id === o.userId)
+      if (!p || p.isAbsent) return o
+      if (o.isManual) return o
 
-        const drink = p.fixedDrinkId
-          ? menuFromMap(menuMap, p.fixedDrinkId)
-          : undefined
-        const drinkPrice =
-          drink && isDrinkItem(drink, categoryMap) ? drink.price : 0
-        const remaining = globalBudget - drinkPrice
-        const pool = filterItemsForWheel(
-          menu,
-          categoryMap,
-          new Set(p.dislikedFoodIds),
-          remaining,
-        )
+      const drink = p.fixedDrinkId
+        ? menuFromMap(menuMap, p.fixedDrinkId)
+        : undefined
+      const drinkPrice =
+        drink && isDrinkItem(drink, categoryMap) ? drink.price : 0
+      const remaining = globalBudget - drinkPrice
+      const pool = filterItemsForWheel(
+        menu,
+        categoryMap,
+        new Set(p.dislikedFoodIds),
+        remaining,
+      )
 
-        if (pool.length === 0) {
-          return {
-            ...o,
-            selectedFoodId: null,
-            foodRemark: undefined,
-            isManual: false,
-          }
-        }
-
-        const pick = pool[Math.floor(Math.random() * pool.length)]
+      if (pool.length === 0) {
         return {
           ...o,
-          selectedFoodId: pick.id,
-          isManual: false,
+          selectedFoodId: null,
           foodRemark: undefined,
+          isManual: false,
         }
-      }),
+      }
+
+      const pick = pool[Math.floor(Math.random() * pool.length)]
+      return {
+        ...o,
+        selectedFoodId: pick.id,
+        isManual: false,
+        foodRemark: undefined,
+      }
+    })
+    setOrders(nextO)
+    void upsertColleagueRows(
+      nextO.map((o) => {
+        const p = personnel.find((x) => x.id === o.userId)
+        return p ? colleagueRowFromPersonnelAndOrder(p, o) : null
+      }).filter((r) => r != null),
     )
-  }, [personnel, menu, categoryMap, menuMap, globalBudget])
+  }, [personnel, menu, categoryMap, menuMap, globalBudget, orders])
 
   const startWheel = useCallback(() => {
     if (!selectedPersonId || wheelCandidates.length === 0) return
@@ -612,6 +638,7 @@ export function BreakfastOrderingApp({
             : o,
         ),
       )
+      schedulePersist(selectedPersonId)
       setLastSpinFoodId(pick.id)
       setSpinPhase('idle')
       setCelebratePick(true)
@@ -620,34 +647,37 @@ export function BreakfastOrderingApp({
     }
 
     spinRafRef.current = requestAnimationFrame(run)
-  }, [selectedPersonId, wheelCandidates, personnel])
+  }, [selectedPersonId, wheelCandidates, personnel, schedulePersist])
 
-  const togglePersonAbsentByDoubleClick = useCallback((id: string) => {
-    setPersonnel((prev) => {
-      const cur = prev.find((x) => x.id === id)
-      if (!cur) return prev
-      const turningAbsent = !cur.isAbsent
-      if (turningAbsent) {
-        queueMicrotask(() => {
-          setOrders((oPrev) =>
-            oPrev.map((o) =>
-              o.userId === id
-                ? {
-                    ...o,
-                    selectedFoodId: null,
-                    foodRemark: undefined,
-                    isManual: false,
-                  }
-                : o,
-            ),
-          )
-        })
-      }
-      return prev.map((p) =>
-        p.id === id ? { ...p, isAbsent: !p.isAbsent } : p,
+  const togglePersonAbsentByDoubleClick = useCallback(
+    (id: string) => {
+      const cur = personnel.find((x) => x.id === id)
+      if (!cur) return
+      const nextAbsent = !cur.isAbsent
+      const nextPersonnel = personnel.map((p) =>
+        p.id === id ? { ...p, isAbsent: nextAbsent } : p,
       )
-    })
-  }, [])
+      const nextOrders = orders.map((o) => {
+        if (o.userId !== id) return o
+        if (nextAbsent) {
+          return {
+            ...o,
+            selectedFoodId: null,
+            foodRemark: undefined,
+            isManual: false,
+          }
+        }
+        const np = nextPersonnel.find((x) => x.id === id)!
+        return { ...o, selectedDrinkId: np.fixedDrinkId ?? null }
+      })
+      setPersonnel(nextPersonnel)
+      setOrders(nextOrders)
+      const p = nextPersonnel.find((x) => x.id === id)!
+      const o = nextOrders.find((x) => x.userId === id)
+      void upsertColleagueRows([colleagueRowFromPersonnelAndOrder(p, o)])
+    },
+    [personnel, orders],
+  )
 
   const scheduleSelectPerson = useCallback((id: string) => {
     if (nameClickTimerRef.current) clearTimeout(nameClickTimerRef.current)
@@ -669,7 +699,7 @@ export function BreakfastOrderingApp({
   )
 
   /** 標題列「＋」：列表內新增一列；姓名於右側「當前點餐編輯」修改 */
-  const addColleagueInline = () => {
+  const addColleagueInline = useCallback(async () => {
     const id = `p-${crypto.randomUUID().slice(0, 8)}`
     const p: Personnel = {
       id,
@@ -680,19 +710,24 @@ export function BreakfastOrderingApp({
       requiresUntoastedToast: false,
       isAbsent: false,
     }
+    const o: Order = {
+      userId: id,
+      selectedDrinkId: null,
+      selectedFoodId: null,
+      isManual: false,
+      foodRemark: undefined,
+    }
+    const row = colleagueRowFromPersonnelAndOrder(p, o)
+    try {
+      await insertColleagueRow(row)
+    } catch (e) {
+      console.error(e)
+      return
+    }
     setPersonnel((prev) => [...prev, p])
-    setOrders((prev) => [
-      ...prev,
-      {
-        userId: id,
-        selectedDrinkId: null,
-        selectedFoodId: null,
-        isManual: false,
-        foodRemark: undefined,
-      },
-    ])
+    setOrders((prev) => [...prev, o])
     setSelectedPersonId(id)
-  }
+  }, [])
 
   const shopSummaryLine = useMemo(
     () => buildShopSummaryLine(menuMap, categoryMap, orders, personnel),
