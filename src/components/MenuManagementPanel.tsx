@@ -15,9 +15,18 @@ const CATEGORY_DATALIST_ID = 'menu-category-options'
 
 function formatMenuAddError(err: unknown): string {
   if (err && typeof err === 'object') {
-    const o = err as { message?: unknown; details?: unknown }
-    if (typeof o.message === 'string' && o.message.trim()) return o.message
-    if (typeof o.details === 'string' && o.details.trim()) return o.details
+    const o = err as {
+      message?: unknown
+      details?: unknown
+      hint?: unknown
+      code?: unknown
+    }
+    const parts: string[] = []
+    if (typeof o.message === 'string' && o.message.trim()) parts.push(o.message)
+    if (typeof o.details === 'string' && o.details.trim()) parts.push(o.details)
+    if (typeof o.hint === 'string' && o.hint.trim()) parts.push(`提示：${o.hint}`)
+    if (typeof o.code === 'string' && o.code.trim()) parts.push(`code: ${o.code}`)
+    if (parts.length > 0) return parts.join(' · ')
   }
   if (err instanceof Error && err.message) return err.message
   return typeof err === 'string' ? err : '新增失敗，請見主控台詳情'
@@ -121,7 +130,11 @@ export function MenuManagementPanel({
       setItemName('')
       setItemPrice(String(price))
     } catch (e: unknown) {
-      console.error('新增餐點失敗:', e)
+      console.error('新增餐點失敗（完整物件）:', e)
+      if (e && typeof e === 'object') {
+        console.error('message:', (e as { message?: string }).message)
+        console.error('details:', (e as { details?: string }).details)
+      }
       setAddError(formatMenuAddError(e))
     } finally {
       setSaving(false)

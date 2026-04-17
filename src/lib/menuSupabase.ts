@@ -60,20 +60,35 @@ export async function fetchMenuFromSupabase(): Promise<{
   return menuFromRows(rows)
 }
 
+/** 與 fetchMenuFromSupabase 相同；insert 成功後請再次呼叫以從資料庫同步畫面 */
+export const fetchMenuItems = fetchMenuFromSupabase
+
 export async function insertMenuItemRow(row: MenuItemMinimalInsert): Promise<void> {
   const priceNum = Number(row.price)
   const priceInt = Number.isFinite(priceNum)
     ? Math.min(999999, Math.max(0, Math.round(priceNum)))
     : 0
-  const payload: MenuItemMinimalInsert = {
-    name: String(row.name ?? '').trim(),
+  const name = String(row.name ?? '').trim()
+  const category = String(row.category ?? '').trim()
+  if (!name) throw new Error('餐點名稱不可為空')
+  if (!category) throw new Error('類別不可為空')
+
+  const record = {
+    name,
     price: priceInt,
-    category: String(row.category ?? '').trim(),
+    category,
   }
-  if (!payload.name) throw new Error('餐點名稱不可為空')
-  if (!payload.category) throw new Error('類別不可為空')
-  const { error } = await supabase.from('menu_items').insert(payload)
-  if (error) throw error
+
+  const { error } = await supabase.from('menu_items').insert([record])
+  if (error) {
+    console.error('menu_items insert 失敗:', {
+      message: error.message,
+      details: error.details,
+      hint: error.hint,
+      code: error.code,
+    })
+    throw error
+  }
 }
 
 export async function deleteMenuItemById(id: string): Promise<void> {

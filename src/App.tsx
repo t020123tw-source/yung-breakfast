@@ -1,13 +1,12 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { MenuCategoryDef, MenuItem } from './data/menuData'
-import { INITIAL_CATEGORIES, INITIAL_MENU_ITEMS } from './data/menuData'
 import { BreakfastOrderingApp } from './components/BreakfastOrderingApp'
 import { MenuManagementPanel } from './components/MenuManagementPanel'
 import { fetchColleaguesFromSupabase } from './lib/colleagueSupabase'
 import {
   deleteMenuItemById,
   deleteMenuItemsByCategoryName,
-  fetchMenuFromSupabase,
+  fetchMenuItems,
   insertMenuItemRow,
 } from './lib/menuSupabase'
 import type { Order, Personnel } from './domain/breakfastTypes'
@@ -30,9 +29,9 @@ function LoadingBlock({ label }: { label: string }) {
 
 function App() {
   const [activeTab, setActiveTab] = useState<AppTab>('order')
-  const [categories, setCategories] =
-    useState<MenuCategoryDef[]>(INITIAL_CATEGORIES)
-  const [menu, setMenu] = useState<MenuItem[]>(INITIAL_MENU_ITEMS)
+  /** 以資料庫為準；載入前為空，避免本地假資料與 Supabase 混淆 */
+  const [categories, setCategories] = useState<MenuCategoryDef[]>([])
+  const [menu, setMenu] = useState<MenuItem[]>([])
 
   const [menuTabLoading, setMenuTabLoading] = useState(false)
   const [menuTabError, setMenuTabError] = useState<string | null>(null)
@@ -50,7 +49,7 @@ function App() {
 
   const loadOrderTabData = useCallback(async () => {
     const [{ categories: c, menu: m }, col] = await Promise.all([
-      fetchMenuFromSupabase(),
+      fetchMenuItems(),
       fetchColleaguesFromSupabase(),
     ])
     setCategories(c)
@@ -76,7 +75,7 @@ function App() {
     setMenuTabError(null)
     void (async () => {
       try {
-        const { categories: c, menu: m } = await fetchMenuFromSupabase()
+        const { categories: c, menu: m } = await fetchMenuItems()
         if (cancelled) return
         setCategories(c)
         setMenu(m)
@@ -116,12 +115,17 @@ function App() {
 
   const onAddMenuItem = useCallback(
     async (args: { name: string; price: number; category: string }) => {
-      await insertMenuItemRow({
-        name: args.name,
-        price: Number(args.price),
-        category: args.category,
-      })
-      const fresh = await fetchMenuFromSupabase()
+      try {
+        await insertMenuItemRow({
+          name: args.name,
+          price: Number(args.price),
+          category: args.category,
+        })
+      } catch (e: unknown) {
+        console.error('新增餐點 insert 失敗（完整錯誤）:', e)
+        throw e
+      }
+      const fresh = await fetchMenuItems()
       setCategories(fresh.categories)
       setMenu(fresh.menu)
     },
@@ -130,13 +134,16 @@ function App() {
 
   const onRemoveMenuItem = useCallback(async (itemId: string) => {
     await deleteMenuItemById(itemId)
-    setMenu((prev) => prev.filter((x) => x.id !== itemId))
+    const fresh = await fetchMenuItems()
+    setCategories(fresh.categories)
+    setMenu(fresh.menu)
   }, [])
 
   const onRemoveMenuCategory = useCallback(async (categoryId: string) => {
     await deleteMenuItemsByCategoryName(categoryId)
-    setMenu((prev) => prev.filter((m) => m.categoryId !== categoryId))
-    setCategories((prev) => prev.filter((c) => c.id !== categoryId))
+    const fresh = await fetchMenuItems()
+    setCategories(fresh.categories)
+    setMenu(fresh.menu)
   }, [])
 
   return (

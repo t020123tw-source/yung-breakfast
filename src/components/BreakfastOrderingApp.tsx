@@ -39,6 +39,10 @@ export type BreakfastOrderingAppProps = {
   onColleaguesSynced?: (opts: { newPersonId: string }) => Promise<void>
 }
 
+/** 備註含此字串時，單人金額額外加價（對應 current_note） */
+const EGG_REMARK_TOKEN = '+蛋'
+const EGG_EXTRA_PRICE = 15
+
 function buildMenuMap(menu: MenuItem[]): Map<string, MenuItem> {
   const m = new Map<string, MenuItem>()
   for (const item of menu) m.set(item.id, item)
@@ -51,6 +55,72 @@ function menuFromMap(
 ): MenuItem | undefined {
   if (!id) return undefined
   return menuMap.get(id)
+}
+
+/**
+ * 單人總金額：以 menu_items 比對飲料與餐點。
+ * - 固定飲料：優先以 id 對應；若無則以字串與品項 name 完全相符者計價。
+ * - 餐點：手動輸入以 name 比對；非手動以 id 比對。
+ * - 比對不到者該項以 0 計；hasUnpriced 表示有欄位未在菜單中找到。
+ * - 若備註（current_note）含「+蛋」，總額另加 15 元。
+ */
+function computeColleagueOrderTotal(
+  p: Personnel,
+  o: Order | undefined,
+  menu: MenuItem[],
+): { total: number; hasUnpriced: boolean } {
+  if (!o || p.isAbsent) {
+    return { total: 0, hasUnpriced: false }
+  }
+
+  let drinkPrice = 0
+  let drinkOk = true
+  const fd = (p.fixedDrinkId ?? '').trim()
+  if (fd) {
+    const byId = menu.find((m) => m.id === fd)
+    if (byId) {
+      drinkPrice = byId.price
+    } else {
+      const byName = menu.find((m) => m.name === fd)
+      if (byName) {
+        drinkPrice = byName.price
+      } else {
+        drinkPrice = 0
+        drinkOk = false
+      }
+    }
+  }
+
+  let foodPrice = 0
+  let foodOk = true
+  const rawFood = (o.selectedFoodId ?? '').trim()
+  if (rawFood) {
+    if (o.isManual) {
+      const byName = menu.find((m) => m.name === rawFood)
+      if (byName) {
+        foodPrice = byName.price
+      } else {
+        foodPrice = 0
+        foodOk = false
+      }
+    } else {
+      const byId = menu.find((m) => m.id === rawFood)
+      if (byId) {
+        foodPrice = byId.price
+      } else {
+        foodPrice = 0
+        foodOk = false
+      }
+    }
+  }
+
+  const hasUnpriced = (!drinkOk && fd !== '') || (!foodOk && rawFood !== '')
+  let total = drinkPrice + foodPrice
+  const note = o.foodRemark ?? ''
+  if (note.includes(EGG_REMARK_TOKEN)) {
+    total += EGG_EXTRA_PRICE
+  }
+  return { total, hasUnpriced }
 }
 
 /** 依人員設定：僅在勾選「吐司類一律不烤」且品項為吐司時加 (不烤) */
@@ -234,6 +304,17 @@ export function BreakfastOrderingApp({
     null,
   )
   const [addColleagueBusy, setAddColleagueBusy] = useState(false)
+  /** ＋蛋切換後，短暫強調該員金額卡 */
+  const [eggAmountFlashUserId, setEggAmountFlashUserId] = useState<string | null>(
+    null,
+  )
+  const eggFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    return () => {
+      if (eggFlashTimerRef.current) clearTimeout(eggFlashTimerRef.current)
+    }
+  }, [])
 
   useEffect(() => {
     if (
@@ -413,6 +494,36 @@ export function BreakfastOrderingApp({
     },
     [selectedPersonId, schedulePersistDebounced],
   )
+
+  /** 切換備註中的「+蛋」（current_note），並立即寫入以更新金額卡 */
+  const toggleEggRemark = useCallback(() => {
+    if (!selectedPersonId) return
+    const person = personnel.find((x) => x.id === selectedPersonId)
+    if (person?.isAbsent) return
+    const o = orders.find((x) => x.userId === selectedPersonId)
+    if (!o) return
+    const cur = o.foodRemark ?? ''
+    const next = cur.includes(EGG_REMARK_TOKEN)
+      ? cur.split(EGG_REMARK_TOKEN).join('').replace(/\s+/g, ' ').trim()
+      : cur
+        ? `${cur}${EGG_REMARK_TOKEN}`
+        : EGG_REMARK_TOKEN
+    setFoodRemarkDraft(next)
+    setOrders((prev) =>
+      prev.map((row) =>
+        row.userId === selectedPersonId
+          ? { ...row, foodRemark: next === '' ? undefined : next }
+          : row,
+      ),
+    )
+    schedulePersist(selectedPersonId)
+    setEggAmountFlashUserId(selectedPersonId)
+    if (eggFlashTimerRef.current) clearTimeout(eggFlashTimerRef.current)
+    eggFlashTimerRef.current = setTimeout(() => {
+      setEggAmountFlashUserId(null)
+      eggFlashTimerRef.current = null
+    }, 520)
+  }, [selectedPersonId, personnel, orders, schedulePersist])
 
   const toggleDislikedFood = useCallback(
     (foodId: string) => {
@@ -903,14 +1014,6 @@ export function BreakfastOrderingApp({
                   >
                     －
                   </button>
-                  <button
-                    type="button"
-                    onClick={batchSpinAll}
-                    className="rounded-lg bg-amber-600 px-3 py-2 text-xs font-bold text-white shadow-sm hover:bg-amber-700 sm:px-4 sm:text-sm"
-                    title="為所有出勤且非手動指定餐點的同事隨機配餐；休假與手動套用者略過"
-                  >
-                    🎲 一鍵全員轉盤
-                  </button>
                 </div>
               </div>
               <ul className="h-auto flex-1 px-1 py-2 sm:px-3">
@@ -922,10 +1025,13 @@ export function BreakfastOrderingApp({
                 {personnel.map((p) => {
                   const active = p.id === selectedPersonId
                   const row = colleagueRowDisplay(p.id)
+                  const orderRow = orders.find((x) => x.userId === p.id)
+                  const { total: lineTotal, hasUnpriced } =
+                    computeColleagueOrderTotal(p, orderRow, menu)
                   return (
                     <li key={p.id} className="border-b border-amber-100/80 last:border-b-0">
                       <div
-                        className={`grid grid-cols-3 gap-2 py-2.5 pl-1 pr-1 transition sm:gap-2.5 sm:pl-2 sm:pr-2 ${
+                        className={`grid grid-cols-12 gap-1.5 py-2.5 pl-1 pr-1 transition sm:gap-2 sm:pl-2 sm:pr-2 ${
                           active
                             ? 'bg-amber-100/90 ring-1 ring-inset ring-amber-300/80'
                             : 'hover:bg-amber-50/80'
@@ -939,14 +1045,14 @@ export function BreakfastOrderingApp({
                             e.preventDefault()
                             cancelScheduledSelectAndToggleAbsent(p.id)
                           }}
-                          className="flex min-h-[3.25rem] min-w-0 cursor-pointer flex-col items-center justify-center rounded-xl border border-slate-200/90 bg-slate-100 px-2 py-2 text-center text-lg font-semibold leading-snug text-slate-900 shadow-sm hover:bg-slate-200/70 sm:text-xl"
+                          className="col-span-2 flex min-h-[3.25rem] min-w-0 max-w-[6.5rem] cursor-pointer flex-col items-center justify-center rounded-xl border border-slate-200/90 bg-slate-100 px-1.5 py-2 text-center text-base font-semibold leading-snug text-slate-900 shadow-sm hover:bg-slate-200/70 sm:max-w-[7.25rem] sm:text-lg"
                         >
                           <span className="line-clamp-3 w-full break-words text-center">
                             {p.name}
                           </span>
                         </button>
 
-                        <div className="flex min-h-[3.25rem] min-w-0 items-stretch rounded-xl border border-slate-200/90 bg-slate-100 px-2 py-1.5 shadow-sm">
+                        <div className="col-span-3 flex min-h-[3.25rem] min-w-0 items-stretch rounded-xl border border-slate-200/90 bg-slate-100 px-2 py-1.5 shadow-sm">
                           {p.isAbsent ? (
                             <div className="flex min-w-0 flex-1 items-center justify-center text-center">
                               <AbsentSlotIcon />
@@ -965,7 +1071,7 @@ export function BreakfastOrderingApp({
                           )}
                         </div>
 
-                        <div className="flex min-h-[3.25rem] min-w-0 items-stretch gap-1">
+                        <div className="col-span-4 flex min-h-[3.25rem] min-w-0 items-stretch gap-1">
                           {p.isAbsent ? (
                             <div className="flex min-h-[3.25rem] min-w-0 flex-1 items-center justify-center rounded-xl border border-slate-200/90 bg-slate-100 px-2 py-2 text-center shadow-sm">
                               <AbsentSlotIcon />
@@ -995,6 +1101,49 @@ export function BreakfastOrderingApp({
                               ×
                             </button>
                           ) : null}
+                        </div>
+
+                        <div
+                          className={`col-span-3 flex min-h-[3.25rem] min-w-0 max-w-[5.5rem] items-stretch justify-center self-stretch rounded-xl border border-slate-200/90 bg-slate-100 px-1.5 py-2 text-center shadow-sm sm:max-w-[6rem] transition-[transform,box-shadow] duration-300 ease-out will-change-transform ${
+                            !p.isAbsent && eggAmountFlashUserId === p.id
+                              ? 'z-[1] scale-[1.05] shadow-md ring-2 ring-amber-400 ring-offset-1 ring-offset-amber-50/90'
+                              : ''
+                          }`}
+                          title={
+                            p.isAbsent
+                              ? undefined
+                              : hasUnpriced
+                                ? '部分品項與菜單名稱未對應，該項以 0 元計'
+                                : `合計 $${lineTotal}`
+                          }
+                        >
+                          {p.isAbsent ? (
+                            <div className="flex flex-1 items-center justify-center">
+                              <AbsentSlotIcon />
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => scheduleSelectPerson(p.id)}
+                              className="flex w-full min-w-0 flex-col items-center justify-center gap-0.5 text-slate-900"
+                            >
+                              <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                                金額
+                              </span>
+                              <span
+                                className={`text-lg font-bold tabular-nums leading-none sm:text-xl ${
+                                  hasUnpriced ? 'text-amber-800' : 'text-slate-900'
+                                }`}
+                              >
+                                $ {lineTotal}
+                              </span>
+                              {hasUnpriced ? (
+                                <span className="max-w-full truncate text-[9px] leading-tight text-amber-700/90">
+                                  部分未入價
+                                </span>
+                              ) : null}
+                            </button>
+                          )}
                         </div>
                       </div>
                     </li>
@@ -1074,69 +1223,17 @@ export function BreakfastOrderingApp({
           <main className="flex min-w-0 flex-col gap-3 lg:col-span-1">
             {selectedPerson && currentOrder ? (
               <>
-            <div className="rounded-2xl border border-amber-200/80 bg-white/95 p-4 shadow-sm">
-              <label className="flex flex-col gap-1 text-sm font-medium text-amber-950">
-                <span>全域預算（每人餐點上限）</span>
-                <span className="flex items-center gap-2">
-                  <span className="text-amber-800/60">$</span>
-                  <input
-                    type="text"
-                    inputMode="numeric"
-                    autoComplete="off"
-                    value={budgetInput}
-                    onChange={(e) => setBudgetInput(e.target.value)}
-                    className="w-full max-w-[10rem] appearance-none rounded-lg border border-amber-300 bg-white px-3 py-2 text-base font-semibold tabular-nums shadow-inner outline-none ring-amber-400/30 focus:ring-2 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-                  />
-                </span>
-              </label>
-              <p className="mt-2 text-[11px] leading-snug text-amber-900/60">
-                單擊左側姓名選人、雙擊切換休假；此處編輯與轉盤。
-              </p>
-            </div>
-
-            <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-start sm:justify-end">
-              <div className="flex max-w-xl flex-col items-stretch gap-1 sm:items-end sm:ml-auto">
-                <button
-                  type="button"
-                  onClick={clearAllWheelFoodsGlobally}
-                  className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-sm font-semibold text-rose-800 hover:bg-rose-100"
-                  title="清空非指定套用之餐點，並將全員恢復為出勤"
-                >
-                  一鍵淨空
-                </button>
-                <p className="text-right text-[11px] leading-snug text-rose-900/55">
-                  影響全部 {personnel.length}
-                  人；清空非指定餐點、取消全員休假；指定套用與飲品／忌口設定不變
-                </p>
-              </div>
-            </div>
-
             <section
               className="rounded-2xl border border-amber-200/80 bg-white/95 p-4 shadow-sm"
               aria-label="點餐板 Order Board"
             >
-              <div className="flex flex-wrap items-start justify-between gap-2 border-b border-amber-100/90 pb-2">
-                <div>
-                  <h2 className="text-sm font-semibold text-amber-950">
-                    點餐板
-                  </h2>
-                  <p className="mt-0.5 text-[11px] text-amber-900/55">
-                    Order Board · 左側點姓名選取；以下即時生效。
-                  </p>
-                </div>
-                <div className="text-right">
-                  <p className="text-[10px] font-medium uppercase tracking-wide text-amber-800/70">
-                    目前編輯
-                  </p>
-                  <p className="max-w-[10rem] truncate text-sm font-bold text-amber-950 sm:max-w-[14rem]">
-                    {selectedPerson.name}
-                  </p>
-                  {selectedPerson.isAbsent ? (
-                    <span className="mt-0.5 inline-block rounded bg-rose-100 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800">
-                      休假中
-                    </span>
-                  ) : null}
-                </div>
+              <div className="border-b border-amber-100/90 pb-2">
+                <h2 className="text-sm font-semibold text-amber-950">
+                  點餐板
+                </h2>
+                <p className="mt-0.5 text-[11px] text-amber-900/55">
+                  Order Board · 左側點姓名選取；以下即時生效。
+                </p>
               </div>
               <div className="mt-3 grid gap-3 sm:grid-cols-2">
                 <label className="block text-sm font-medium text-slate-800">
@@ -1229,17 +1326,33 @@ export function BreakfastOrderingApp({
               </div>
 
               <div className="mt-2 flex flex-col gap-2 border-t border-amber-100/80 pt-2.5">
-                <label className="block text-xs font-medium text-slate-800">
-                  餐點備註 (顯示於列表)
-                  <input
-                    type="text"
-                    value={foodRemarkDraft}
-                    onChange={onFoodRemarkInputChange}
-                    placeholder="例如：不加美乃滋"
-                    autoComplete="off"
-                    className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm outline-none ring-amber-400/30 focus:ring-2"
-                  />
-                </label>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-2">
+                  <label className="block min-w-0 flex-1 text-xs font-medium text-slate-800">
+                    餐點備註 (顯示於列表)
+                    <input
+                      type="text"
+                      value={foodRemarkDraft}
+                      onChange={onFoodRemarkInputChange}
+                      placeholder="例如：不加美乃滋"
+                      autoComplete="off"
+                      className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm outline-none ring-amber-400/30 focus:ring-2"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    disabled={!!selectedPerson.isAbsent}
+                    aria-pressed={foodRemarkDraft.includes(EGG_REMARK_TOKEN)}
+                    onClick={() => toggleEggRemark()}
+                    title={`切換備註「${EGG_REMARK_TOKEN}」（總價 ${EGG_EXTRA_PRICE} 元）`}
+                    className={`mt-1 shrink-0 rounded-lg border px-3 py-2 text-sm font-bold tabular-nums shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:mt-0 sm:min-h-[2.125rem] ${
+                      foodRemarkDraft.includes(EGG_REMARK_TOKEN)
+                        ? 'border-amber-500 bg-amber-100 text-amber-950 ring-1 ring-amber-400/60'
+                        : 'border-slate-300 bg-white text-slate-800 hover:bg-amber-50/80'
+                    }`}
+                  >
+                    ＋蛋
+                  </button>
+                </div>
                 <label className="block text-xs font-medium text-slate-700">
                   其他備註 (僅限內部查看)
                   <input
@@ -1269,16 +1382,26 @@ export function BreakfastOrderingApp({
             </section>
 
             <section
-              className="rounded-2xl border border-orange-200/70 bg-white/90 p-5 shadow-sm shadow-orange-900/5"
+              className="rounded-2xl border border-orange-200/70 bg-white/90 p-4 shadow-sm shadow-orange-900/5 sm:p-5"
               aria-label="Breakfast Wheel 隨機抽籤"
             >
-              <h2 className="text-lg font-semibold text-orange-950">
-                隨機抽籤轉盤
-              </h2>
-              <p className="mt-1 text-xs text-orange-900/55">
-                Breakfast Wheel · 候選由預算與忌口過濾；飲料類不參與抽選；大量品項時以文字跳動抽選。
-              </p>
-              <div className="mt-3 rounded-2xl border-2 border-dashed border-orange-300/80 bg-gradient-to-b from-orange-50/90 to-amber-50/50 p-4">
+              <div className="flex flex-col gap-4 lg:flex-row lg:items-stretch lg:gap-5">
+                <div className="flex min-w-0 flex-1 flex-col">
+                  <button
+                    type="button"
+                    onClick={batchSpinAll}
+                    className="mb-1 self-start rounded-lg bg-amber-600 px-3 py-2 text-left text-xs font-bold text-white shadow-sm hover:bg-amber-700 sm:px-4 sm:text-sm"
+                    title="為所有出勤且非手動指定餐點的同事隨機配餐；休假與手動套用者略過"
+                  >
+                    🎲 一鍵全員轉盤
+                  </button>
+                  <h2 className="text-lg font-semibold text-orange-950">
+                    隨機抽籤轉盤
+                  </h2>
+                  <p className="mt-1 text-xs text-orange-900/55">
+                    Breakfast Wheel · 候選由預算與忌口過濾；飲料類不參與抽選；大量品項時以文字跳動抽選。
+                  </p>
+                  <div className="mt-3 rounded-2xl border-2 border-dashed border-orange-300/80 bg-gradient-to-b from-orange-50/90 to-amber-50/50 p-4">
                 <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2 text-sm">
                   <span className="text-orange-900/75">
                     剩餘預算（無飲品則不扣款）
@@ -1289,7 +1412,7 @@ export function BreakfastOrderingApp({
                 </div>
 
                 <div
-                  className={`relative mx-auto w-full max-w-lg rounded-2xl bg-gradient-to-b from-orange-200/95 via-amber-100/90 to-orange-300/90 p-[5px] shadow-[0_20px_56px_-14px_rgba(194,65,12,0.42)] ring-2 ring-amber-950/15 transition-[transform,box-shadow] duration-300 ${
+                  className={`relative w-full rounded-2xl bg-gradient-to-b from-orange-200/95 via-amber-100/90 to-orange-300/90 p-[5px] shadow-[0_20px_56px_-14px_rgba(194,65,12,0.42)] ring-2 ring-amber-950/15 transition-[transform,box-shadow] duration-300 ${
                     celebratePick
                       ? 'scale-[1.02] shadow-[0_22px_60px_-10px_rgba(16,185,129,0.42)] ring-emerald-400/50'
                       : ''
@@ -1395,6 +1518,40 @@ export function BreakfastOrderingApp({
                 ) : (
                   '點擊「開始抽餐」以隨機選餐並寫入今日訂單。'
                 )}
+              </div>
+                </div>
+
+                <div className="flex w-full shrink-0 flex-col gap-3 border-t border-orange-200/60 pt-4 lg:w-48 lg:max-w-[13rem] lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0 xl:w-52">
+                  <label className="flex flex-col gap-1 text-sm font-medium text-amber-950">
+                    <span>全域預算（每人餐點上限）</span>
+                    <span className="flex items-center gap-2">
+                      <span className="text-amber-800/60">$</span>
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete="off"
+                        value={budgetInput}
+                        onChange={(e) => setBudgetInput(e.target.value)}
+                        className="w-full min-w-0 appearance-none rounded-lg border border-amber-300 bg-white px-3 py-2 text-base font-semibold tabular-nums shadow-inner outline-none ring-amber-400/30 focus:ring-2 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                      />
+                    </span>
+                  </label>
+                  <p className="text-[11px] leading-snug text-amber-900/60">
+                    單擊左側姓名選人、雙擊切換休假；與轉盤連動。
+                  </p>
+                  <button
+                    type="button"
+                    onClick={clearAllWheelFoodsGlobally}
+                    className="w-full rounded-xl border border-rose-200 bg-rose-50 px-4 py-2.5 text-left text-sm font-semibold text-rose-800 hover:bg-rose-100"
+                    title="清空非指定套用之餐點，並將全員恢復為出勤"
+                  >
+                    一鍵淨空
+                  </button>
+                  <p className="text-[11px] leading-snug text-rose-900/55">
+                    影響全部 {personnel.length}
+                    人；清空非指定餐點、取消全員休假；指定套用與飲品／忌口設定不變
+                  </p>
+                </div>
               </div>
             </section>
               </>
