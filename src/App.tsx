@@ -98,11 +98,12 @@ function App() {
   }, [activeTab])
 
   const onAddMenuItem = useCallback(
-    async (args: { newCategory?: MenuCategoryDef; item: MenuItem }) => {
-      const nextCategories = args.newCategory
-        ? [...categories, args.newCategory]
-        : categories
-      if (args.newCategory) {
+    async (args: { item: MenuItem }) => {
+      const catId = args.item.categoryId
+      const nextCategories = categories.some((c) => c.id === catId)
+        ? categories
+        : [...categories, { id: catId, name: catId }]
+      if (nextCategories.length > categories.length) {
         setCategories(nextCategories)
       }
       const row = menuItemToInsertPayload(args.item, nextCategories)

@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react'
 import {
@@ -11,22 +12,19 @@ import {
   sortCategoriesForDisplay,
 } from '../data/menuData'
 
-const NEW_CAT_VALUE = '__new_category__'
+const CATEGORY_DATALIST_ID = 'menu-category-options'
 
 type Props = {
   categories: MenuCategoryDef[]
   menu: MenuItem[]
-  onAddItem: (args: {
-    newCategory?: MenuCategoryDef
-    item: MenuItem
-  }) => Promise<void>
+  onAddItem: (args: { item: MenuItem }) => Promise<void>
   onRemoveItem: (itemId: string) => Promise<void>
   onRemoveCategory: (categoryId: string) => Promise<void>
 }
 
 function categoryEmoji(c: MenuCategoryDef): string {
-  if (c.isDrink) return '🥤'
-  if (c.isToast) return '🍞'
+  if (c.name === '飲料') return '🥤'
+  if (c.name === '吐司') return '🍞'
   return '🍽️'
 }
 
@@ -39,22 +37,18 @@ export function MenuManagementPanel({
 }: Props) {
   const [itemName, setItemName] = useState('')
   const [itemPrice, setItemPrice] = useState('30')
-  const [categoryChoice, setCategoryChoice] = useState(
-    () => categories[0]?.id ?? '',
-  )
-
-  const [newCatName, setNewCatName] = useState('')
-  const [newCatDrink, setNewCatDrink] = useState(false)
-  const [newCatToast, setNewCatToast] = useState(false)
+  /** 類別：可從 datalist 選現有，或直接輸入新類別名稱 */
+  const [categoryInput, setCategoryInput] = useState('')
   const [saving, setSaving] = useState(false)
+  const didInitCategoryRef = useRef(false)
 
+  /** 僅在首次取得類別列表時帶入預設值，避免與使用者清空／輸入衝突 */
   useEffect(() => {
-    if (categoryChoice === NEW_CAT_VALUE) return
-    if (categoryChoice && categories.some((c) => c.id === categoryChoice)) {
-      return
-    }
-    setCategoryChoice(categories[0]?.id ?? NEW_CAT_VALUE)
-  }, [categories, categoryChoice])
+    if (didInitCategoryRef.current) return
+    if (categories.length === 0) return
+    setCategoryInput(categories[0]?.name ?? '')
+    didInitCategoryRef.current = true
+  }, [categories])
 
   const categoriesDisplayOrder = useMemo(
     () => sortCategoriesForDisplay(categories),
@@ -88,25 +82,8 @@ export function MenuManagementPanel({
   const addItem = useCallback(async () => {
     if (saving) return
     const name = itemName.trim()
-    if (!name) return
-
-    let newCategory: MenuCategoryDef | undefined
-    let targetCategoryId = categoryChoice
-
-    if (categoryChoice === NEW_CAT_VALUE) {
-      const cn = newCatName.trim()
-      if (!cn || (newCatDrink && newCatToast)) return
-      /** 與 DB `category` 字串一致：id／name 皆用分類名稱 */
-      newCategory = {
-        id: cn,
-        name: cn,
-        isDrink: newCatDrink,
-        isToast: newCatToast && !newCatDrink,
-      }
-      targetCategoryId = cn
-    }
-
-    if (!targetCategoryId || targetCategoryId === NEW_CAT_VALUE) return
+    const cat = categoryInput.trim()
+    if (!name || !cat) return
 
     const price = Math.max(
       0,
@@ -117,18 +94,12 @@ export function MenuManagementPanel({
       id,
       name,
       price,
-      categoryId: targetCategoryId,
+      categoryId: cat,
     }
 
     setSaving(true)
     try {
-      await onAddItem({ newCategory, item })
-      if (categoryChoice === NEW_CAT_VALUE) {
-        setNewCatName('')
-        setNewCatDrink(false)
-        setNewCatToast(false)
-        setCategoryChoice(targetCategoryId)
-      }
+      await onAddItem({ item })
       setItemName('')
       setItemPrice(String(price))
     } catch (e) {
@@ -136,16 +107,7 @@ export function MenuManagementPanel({
     } finally {
       setSaving(false)
     }
-  }, [
-    saving,
-    itemName,
-    itemPrice,
-    categoryChoice,
-    newCatName,
-    newCatDrink,
-    newCatToast,
-    onAddItem,
-  ])
+  }, [saving, itemName, itemPrice, categoryInput, onAddItem])
 
   const removeItem = useCallback(
     async (itemId: string) => {
@@ -164,116 +126,73 @@ export function MenuManagementPanel({
 
   return (
     <div className="mx-auto w-full max-w-7xl space-y-10 pb-16">
-      {/* 上半部：新增餐點（單行橫向） */}
       <section className="rounded-lg border border-emerald-200/90 bg-white p-3 shadow-sm sm:p-4">
         <h2 className="mb-2 text-sm font-semibold text-emerald-950">新增餐點</h2>
 
-        <div className="flex flex-col gap-2">
-          <div className="flex min-w-0 flex-nowrap items-center gap-2 overflow-x-auto pb-0.5 sm:gap-3 md:overflow-visible">
-            <div className="min-w-[10.5rem] shrink-0 md:min-w-0 md:flex-1">
-              <select
-                value={categoryChoice}
-                onChange={(e) => setCategoryChoice(e.target.value)}
-                title="類別"
+        <div className="flex flex-col gap-3">
+          <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-end sm:gap-3">
+            <label className="block min-w-0 flex-1 text-sm font-medium text-slate-800">
+              類別
+              <input
+                type="text"
+                list={CATEGORY_DATALIST_ID}
+                value={categoryInput}
+                onChange={(e) => setCategoryInput(e.target.value)}
+                placeholder="選擇或輸入類別名稱"
                 disabled={saving}
-                className="h-10 w-full rounded-lg border border-slate-200 bg-white px-2.5 text-sm text-slate-900 outline-none ring-emerald-400/20 focus:ring-2 disabled:opacity-50"
-              >
+                autoComplete="off"
+                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-900 outline-none ring-emerald-400/20 placeholder:text-slate-400 focus:ring-2 disabled:opacity-50"
+              />
+              <datalist id={CATEGORY_DATALIST_ID}>
                 {categoriesDisplayOrder.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                    {c.isDrink ? '（飲料）' : ''}
-                    {c.isToast ? '（吐司）' : ''}
-                  </option>
+                  <option key={c.id} value={c.name} />
                 ))}
-                <option value={NEW_CAT_VALUE}>＋ 建立新類別…</option>
-              </select>
-            </div>
+              </datalist>
+            </label>
 
-            <div className="min-w-[10rem] shrink-0 md:min-w-0 md:flex-[2]">
+            <label className="block min-w-0 flex-[2] text-sm font-medium text-slate-800">
+              餐點名稱
               <input
                 value={itemName}
                 onChange={(e) => setItemName(e.target.value)}
                 placeholder="餐點名稱"
                 disabled={saving}
-                className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm text-slate-900 outline-none ring-emerald-400/20 placeholder:text-slate-400 focus:ring-2 disabled:opacity-50"
+                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm text-slate-900 outline-none ring-emerald-400/20 placeholder:text-slate-400 focus:ring-2 disabled:opacity-50"
               />
-            </div>
+            </label>
 
-            <div className="w-24 shrink-0 sm:w-28">
+            <label className="block w-full shrink-0 text-sm font-medium text-slate-800 sm:w-28">
+              金額
               <input
                 inputMode="numeric"
                 value={itemPrice}
                 onChange={(e) => setItemPrice(e.target.value)}
                 placeholder="金額"
                 disabled={saving}
-                className="h-10 w-full rounded-lg border border-slate-200 px-3 text-sm tabular-nums text-slate-900 outline-none ring-emerald-400/20 placeholder:text-slate-400 focus:ring-2 disabled:opacity-50"
+                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm tabular-nums text-slate-900 outline-none ring-emerald-400/20 placeholder:text-slate-400 focus:ring-2 disabled:opacity-50"
               />
-            </div>
+            </label>
 
             <button
               type="button"
               onClick={() => void addItem()}
-              disabled={
-                saving ||
-                !itemName.trim() ||
-                (categoryChoice === NEW_CAT_VALUE &&
-                  (!newCatName.trim() || (newCatDrink && newCatToast)))
-              }
-              className="h-10 w-auto shrink-0 whitespace-nowrap rounded-lg bg-emerald-600 px-6 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={saving || !itemName.trim() || !categoryInput.trim()}
+              className="h-10 w-full shrink-0 rounded-lg bg-emerald-600 px-6 py-2 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50 sm:h-[2.625rem] sm:w-auto sm:self-end"
             >
               {saving ? '同步中…' : '+ 新增'}
             </button>
           </div>
-
-          {categoryChoice === NEW_CAT_VALUE ? (
-            <div className="flex flex-wrap items-center gap-2 rounded-md border border-dashed border-emerald-300/80 bg-emerald-50/60 px-2 py-1.5">
-              <input
-                value={newCatName}
-                onChange={(e) => setNewCatName(e.target.value)}
-                placeholder="新類別名稱"
-                disabled={saving}
-                className="h-9 min-w-[10rem] flex-1 rounded border border-slate-200 bg-white px-2.5 text-sm disabled:opacity-50"
-              />
-              <label className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={newCatDrink}
-                  disabled={saving}
-                  onChange={(e) => {
-                    setNewCatDrink(e.target.checked)
-                    if (e.target.checked) setNewCatToast(false)
-                  }}
-                  className="rounded border-slate-300"
-                />
-                飲料
-              </label>
-              <label className="flex cursor-pointer items-center gap-1.5 whitespace-nowrap text-xs text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={newCatToast}
-                  disabled={saving}
-                  onChange={(e) => {
-                    setNewCatToast(e.target.checked)
-                    if (e.target.checked) setNewCatDrink(false)
-                  }}
-                  className="rounded border-slate-300"
-                />
-                吐司
-              </label>
-            </div>
-          ) : null}
         </div>
 
         <p className="mt-2 text-[11px] leading-snug text-slate-500">
-          選「建立新類別」時須填新類別名稱；飲料／吐司屬性影響點餐介面。
+          類別欄可從建議清單選取，或直接輸入新類別名稱。飲料請將類別命名為「飲料」，轉盤與固定飲料邏輯會依類別名稱判斷。
         </p>
       </section>
 
-      {/* 下半部：依類別分群列表 */}
       <section>
         <h2 className="text-lg font-bold text-slate-900">現有菜單列表</h2>
         <p className="mt-1 text-xs text-slate-600">
-          依類別分組（飲料類固定排在最後一欄）；多欄並排以減少捲動。刪除類別會一併刪除該類所有餐點。
+          依類別分組（「飲料」類固定排在最後一欄）；刪除類別會一併刪除該類所有餐點。
         </p>
 
         <ul className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-3 lg:grid-cols-4 md:gap-5 lg:gap-6">

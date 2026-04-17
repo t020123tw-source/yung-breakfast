@@ -2,7 +2,7 @@ import type { MenuCategoryDef, MenuItem } from '../data/menuData'
 import { supabase } from './supabaseClient'
 
 /**
- * 與 Supabase public.menu_items 實際欄位一致（僅請求存在的欄位）：
+ * 與 Supabase public.menu_items 實際欄位一致：
  * id, name, price, category, created_at
  */
 export type MenuItemRow = {
@@ -13,36 +13,15 @@ export type MenuItemRow = {
   created_at?: string
 }
 
-/** 寫入資料庫時僅送 id, name, price, category（不含 created_at，由 DB 預設） */
 export type MenuItemInsertPayload = Pick<
   MenuItemRow,
   'id' | 'name' | 'price' | 'category'
 >
 
-/**
- * 以單一 category 字串還原 UI 用的 isDrink / isToast（資料庫不存布林，由此推斷）。
- */
-export function categoryMetaFromLabel(label: string): Pick<
-  MenuCategoryDef,
-  'isDrink' | 'isToast'
-> {
-  const s = label.trim()
-  const isDrink =
-    s === '飲料' || s.includes('飲料') || /^drink$/i.test(s)
-  const isToast = s.includes('吐司')
-  return { isDrink, isToast }
-}
-
 function categoryDefFromLabel(label: string): MenuCategoryDef {
-  const meta = categoryMetaFromLabel(label)
-  return {
-    id: label,
-    name: label,
-    ...meta,
-  }
+  return { id: label, name: label }
 }
 
-/** 由資料列還原 categories（依 category 字串出現順序去重）與 menu */
 export function menuFromRows(rows: MenuItemRow[]): {
   categories: MenuCategoryDef[]
   menu: MenuItem[]
@@ -105,7 +84,6 @@ export async function deleteMenuItemById(id: string): Promise<void> {
   if (error) throw error
 }
 
-/** 刪除該分類字串下的所有品項（category 欄位與 MenuCategoryDef.name / id 一致） */
 export async function deleteMenuItemsByCategoryName(
   categoryName: string,
 ): Promise<void> {

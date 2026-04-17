@@ -9,7 +9,6 @@ import {
 import {
   type MenuCategoryDef,
   type MenuItem,
-  buildCategoryMap,
   filterItemsForWheel,
   getFixedDrinkSelectOptions,
   isDrinkItem,
@@ -53,10 +52,9 @@ function menuFromMap(
 function formatFoodLabelForPerson(
   food: MenuItem,
   person: Personnel | undefined,
-  cm: Map<string, MenuCategoryDef>,
 ): string {
   let s = food.name
-  if (person?.requiresUntoastedToast && isToastItem(food, cm)) {
+  if (person?.requiresUntoastedToast && isToastItem(food)) {
     s += '(不烤)'
   }
   return s
@@ -87,14 +85,13 @@ function AbsentSlotIcon() {
 
 function buildFoodLineForShop(
   menuMap: Map<string, MenuItem>,
-  cm: Map<string, MenuCategoryDef>,
   o: Order,
   person: Personnel | undefined,
 ): string | null {
   if (!o.selectedFoodId) return null
   const food = menuFromMap(menuMap, o.selectedFoodId)
-  if (!food || !isMealItem(food, cm)) return null
-  let label = formatFoodLabelForPerson(food, person, cm)
+  if (!food || !isMealItem(food)) return null
+  let label = formatFoodLabelForPerson(food, person)
   const fr = (o.foodRemark ?? '').trim()
   if (fr) label += `（${fr}）`
   return label
@@ -103,7 +100,6 @@ function buildFoodLineForShop(
 /** 產生單行純文字總結（不含表格） */
 function buildShopSummaryLine(
   menuMap: Map<string, MenuItem>,
-  cm: Map<string, MenuCategoryDef>,
   orders: Order[],
   personnel: Personnel[],
 ): string {
@@ -114,12 +110,12 @@ function buildShopSummaryLine(
     if (person?.isAbsent) continue
     if (o.selectedDrinkId) {
       const drink = menuFromMap(menuMap, o.selectedDrinkId)
-      if (drink && isDrinkItem(drink, cm)) {
+      if (drink && isDrinkItem(drink)) {
         map.set(drink.name, (map.get(drink.name) ?? 0) + 1)
       }
     }
     if (o.selectedFoodId) {
-      const line = buildFoodLineForShop(menuMap, cm, o, person)
+      const line = buildFoodLineForShop(menuMap, o, person)
       if (line) {
         map.set(line, (map.get(line) ?? 0) + 1)
       }
@@ -212,6 +208,8 @@ export function BreakfastOrderingApp({
   /** 抽中後短暫慶祝動畫 */
   const [celebratePick, setCelebratePick] = useState(false)
   const [dislikeModalOpen, setDislikeModalOpen] = useState(false)
+  /** 新增同事：永遠顯示於頂部；可輸入姓名後新增（留空則預設「新同事」） */
+  const [newColleagueName, setNewColleagueName] = useState('')
 
   /** 延遲單擊選人，避免與雙擊切換休假衝突 */
   const nameClickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -238,20 +236,12 @@ export function BreakfastOrderingApp({
     )
   }, [personnel])
 
-  const categoryMap = useMemo(
-    () => buildCategoryMap(categories),
-    [categories],
-  )
-
-  /** 固定飲料：即時自共用 `menu` 篩選 isDrink 類別（與轉盤候選分離） */
-  const drinkOptions = useMemo(
-    () => getFixedDrinkSelectOptions(menu, categoryMap),
-    [menu, categoryMap],
-  )
+  /** 固定飲料：categoryId === '飲料'（與轉盤候選分離） */
+  const drinkOptions = useMemo(() => getFixedDrinkSelectOptions(menu), [menu])
   /** 吐司＋一般餐（指定餐點、忌口、轉盤候選） */
   const foodOptions = useMemo(
-    () => menu.filter((m) => isMealItem(m, categoryMap)),
-    [menu, categoryMap],
+    () => menu.filter((m) => isMealItem(m)),
+    [menu],
   )
 
   const menuMap = useMemo(() => buildMenuMap(menu), [menu])
@@ -266,19 +256,19 @@ export function BreakfastOrderingApp({
     const drink = selectedPerson.fixedDrinkId
       ? menuFromMap(menuMap, selectedPerson.fixedDrinkId)
       : undefined
-    const drinkPrice = drink && isDrinkItem(drink, categoryMap) ? drink.price : 0
+    const drinkPrice = drink && isDrinkItem(drink) ? drink.price : 0
     const remaining = globalBudget - drinkPrice
-    return filterItemsForWheel(menu, categoryMap, dislikedIdSet, remaining)
-  }, [menu, menuMap, categoryMap, selectedPerson, globalBudget, dislikedIdSet])
+    return filterItemsForWheel(menu, dislikedIdSet, remaining)
+  }, [menu, menuMap, selectedPerson, globalBudget, dislikedIdSet])
 
   const remainingBudget = useMemo(() => {
     if (!selectedPerson) return 0
     const drink = selectedPerson.fixedDrinkId
       ? menuFromMap(menuMap, selectedPerson.fixedDrinkId)
       : undefined
-    const drinkPrice = drink && isDrinkItem(drink, categoryMap) ? drink.price : 0
+    const drinkPrice = drink && isDrinkItem(drink) ? drink.price : 0
     return Math.max(0, globalBudget - drinkPrice)
-  }, [menuMap, categoryMap, selectedPerson, globalBudget])
+  }, [menuMap, selectedPerson, globalBudget])
 
   /** 菜單或類別變更時：修正無效的飲料／餐點／忌口 id（僅在實際變動時更新 state） */
   useEffect(() => {
@@ -290,7 +280,7 @@ export function BreakfastOrderingApp({
         let fd = p.fixedDrinkId
         if (fd) {
           const it = menuFromMap(menuMap, fd)
-          if (!it || !isDrinkItem(it, categoryMap)) fd = null
+          if (!it || !isDrinkItem(it)) fd = null
         }
         const dis = p.dislikedFoodIds.filter((id) => ids.has(id))
         const fdChanged = fd !== p.fixedDrinkId
@@ -333,7 +323,7 @@ export function BreakfastOrderingApp({
       }
       return any ? next : prev
     })
-  }, [menu, categories, categoryMap, menuMap, schedulePersist])
+  }, [menu, categories, menuMap, schedulePersist])
 
   useEffect(() => {
     const o = orders.find((x) => x.userId === selectedPersonId)
@@ -546,11 +536,10 @@ export function BreakfastOrderingApp({
         ? menuFromMap(menuMap, p.fixedDrinkId)
         : undefined
       const drinkPrice =
-        drink && isDrinkItem(drink, categoryMap) ? drink.price : 0
+        drink && isDrinkItem(drink) ? drink.price : 0
       const remaining = globalBudget - drinkPrice
       const pool = filterItemsForWheel(
         menu,
-        categoryMap,
         new Set(p.dislikedFoodIds),
         remaining,
       )
@@ -579,7 +568,7 @@ export function BreakfastOrderingApp({
         return p ? colleagueRowFromPersonnelAndOrder(p, o) : null
       }).filter((r) => r != null),
     )
-  }, [personnel, menu, categoryMap, menuMap, globalBudget, orders])
+  }, [personnel, menu, menuMap, globalBudget, orders])
 
   const startWheel = useCallback(() => {
     if (!selectedPersonId || wheelCandidates.length === 0) return
@@ -700,10 +689,12 @@ export function BreakfastOrderingApp({
 
   /** 標題列「＋」：列表內新增一列；姓名於右側「當前點餐編輯」修改 */
   const addColleagueInline = useCallback(async () => {
+    const nameTrim = newColleagueName.trim()
+    const displayName = nameTrim.length > 0 ? nameTrim : '新同事'
     const id = `p-${crypto.randomUUID().slice(0, 8)}`
     const p: Personnel = {
       id,
-      name: '新同事',
+      name: displayName,
       fixedDrinkId: null,
       dislikedFoodIds: [],
       extraRemark: undefined,
@@ -724,14 +715,15 @@ export function BreakfastOrderingApp({
       console.error(e)
       return
     }
+    setNewColleagueName('')
     setPersonnel((prev) => [...prev, p])
     setOrders((prev) => [...prev, o])
     setSelectedPersonId(id)
-  }, [])
+  }, [newColleagueName])
 
   const shopSummaryLine = useMemo(
-    () => buildShopSummaryLine(menuMap, categoryMap, orders, personnel),
-    [menuMap, categoryMap, orders, personnel],
+    () => buildShopSummaryLine(menuMap, orders, personnel),
+    [menuMap, orders, personnel],
   )
 
   const wheelEmptyCenterText = useMemo(() => {
@@ -767,8 +759,8 @@ export function BreakfastOrderingApp({
     let mealLine = ''
     if (o.selectedFoodId) {
       const food = menuFromMap(menuMap, o.selectedFoodId)
-      if (food && isMealItem(food, categoryMap)) {
-        const base = formatFoodLabelForPerson(food, p, categoryMap)
+      if (food && isMealItem(food)) {
+        const base = formatFoodLabelForPerson(food, p)
         const fr = (o.foodRemark ?? '').trim()
         let tail = base
         if (fr) tail += `（${fr}）`
@@ -783,18 +775,53 @@ export function BreakfastOrderingApp({
       ? menuFromMap(menuMap, currentOrder.selectedFoodId)
       : undefined
 
-  const orderTabEmpty = !selectedPerson || !currentOrder
-
   return (
     <>
     <div className="w-full text-slate-900">
       <div className="flex w-full flex-col px-4 py-5 sm:px-6 lg:px-10 lg:py-7">
-        {orderTabEmpty ? (
-          <div className="flex min-h-[50vh] w-full items-center justify-center rounded-2xl border border-amber-200 bg-white/80 p-8">
-            <p className="text-amber-900/80">請先新增至少一位同事。</p>
+        <section
+          className="mb-5 rounded-2xl border border-amber-300/80 bg-amber-50/50 p-4 shadow-sm sm:p-5"
+          aria-label="新增同事"
+        >
+          <h2 className="text-sm font-semibold text-amber-950">
+            新增同事
+          </h2>
+          <p className="mt-1 text-xs text-amber-900/65">
+            無論名單是否為空，都可在此加入同事；姓名可留空，將以「新同事」建立。
+          </p>
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
+            <label className="min-w-0 flex-1 text-sm font-medium text-slate-800">
+              <span className="sr-only">新同事姓名</span>
+              <input
+                type="text"
+                value={newColleagueName}
+                onChange={(e) => setNewColleagueName(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    void addColleagueInline()
+                  }
+                }}
+                placeholder="姓名（可留空）"
+                autoComplete="off"
+                className="mt-1 w-full rounded-lg border border-amber-200 bg-white px-3 py-2.5 text-base text-slate-900 outline-none ring-amber-400/30 placeholder:text-slate-400 focus:ring-2"
+              />
+            </label>
+            <button
+              type="button"
+              onClick={() => void addColleagueInline()}
+              className="shrink-0 rounded-xl bg-amber-600 px-6 py-2.5 text-sm font-bold text-white shadow-sm hover:bg-amber-700 sm:py-3"
+            >
+              新增同事
+            </button>
           </div>
-        ) : (
-          <>
+          {personnel.length === 0 ? (
+            <p className="mt-3 text-sm text-amber-900/75">
+              目前尚無同事資料，請使用上方欄位新增第一位同事。
+            </p>
+          ) : null}
+        </section>
+
         <header className="mb-5 flex flex-col gap-4 border-b border-amber-200/80 pb-5 sm:flex-row sm:items-end sm:justify-between">
           <p className="max-w-3xl text-sm text-amber-900/70">
             全域預算套用全體同事；單擊姓名卡片選人、雙擊切換休假。右側可編輯資料、指定餐點或隨機選餐。「一鍵淨空」會清空非指定套用之餐點並取消全員休假。
@@ -857,6 +884,11 @@ export function BreakfastOrderingApp({
                 </div>
               </div>
               <ul className="h-auto px-1 py-2 sm:px-3">
+                {personnel.length === 0 ? (
+                  <li className="list-none px-3 py-12 text-center text-sm text-amber-800/80">
+                    尚無同事列在此處；請使用頁面上方「新增同事」加入第一位。
+                  </li>
+                ) : null}
                 {personnel.map((p) => {
                   const active = p.id === selectedPersonId
                   const row = colleagueRowDisplay(p.id)
@@ -957,6 +989,8 @@ export function BreakfastOrderingApp({
 
           {/* 右：當前編輯、指定餐點、隨機選餐 */}
           <main className="flex min-w-0 flex-col gap-3 lg:col-span-4 xl:col-span-4">
+            {selectedPerson && currentOrder ? (
+              <>
             <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-start sm:justify-end">
               <div className="flex max-w-xl flex-col items-stretch gap-1 sm:items-end sm:ml-auto">
                 <button
@@ -1115,7 +1149,6 @@ export function BreakfastOrderingApp({
                             const base = formatFoodLabelForPerson(
                               selectedFood,
                               selectedPerson,
-                              categoryMap,
                             )
                             const fr = (currentOrder.foodRemark ?? '').trim()
                             let s = `${base}（$${selectedFood.price}）`
@@ -1189,7 +1222,6 @@ export function BreakfastOrderingApp({
                             {formatFoodLabelForPerson(
                               lotteryBoxItem,
                               selectedPerson,
-                              categoryMap,
                             )}
                           </p>
                           <p className="mt-2 text-sm tabular-nums text-orange-800/80">
@@ -1233,7 +1265,7 @@ export function BreakfastOrderingApp({
                       {(() => {
                         const f = menuFromMap(menuMap, lastSpinFoodId)
                         return f
-                          ? formatFoodLabelForPerson(f, selectedPerson, categoryMap)
+                          ? formatFoodLabelForPerson(f, selectedPerson)
                           : '—'
                       })()}
                     </span>
@@ -1249,10 +1281,19 @@ export function BreakfastOrderingApp({
                 )}
               </div>
             </section>
+              </>
+            ) : (
+              <div className="flex min-h-[min(28rem,55vh)] flex-col justify-center rounded-2xl border border-dashed border-amber-300/80 bg-amber-50/50 px-5 py-12 text-center shadow-inner">
+                <p className="text-base font-semibold text-amber-950">
+                  尚無可編輯的同事
+                </p>
+                <p className="mt-3 text-sm leading-relaxed text-amber-900/70">
+                  請先使用頁面上方「新增同事」加入至少一位同事，左側列表出現資料後，即可在此編輯飲料、餐點與隨機選餐。
+                </p>
+              </div>
+            )}
           </main>
         </div>
-          </>
-        )}
       </div>
     </div>
 
