@@ -13,31 +13,44 @@ type EntryDraft = {
   otherIsOnLeave: boolean
 }
 
-function normalizeFoodText(raw: unknown): string {
+function normalizeFoodCellText(raw: unknown): string {
   if (typeof raw !== 'string') return ''
-  const text = raw.trim()
-  return text === '' || text === '0' ? '' : text
+  return raw.trim()
 }
 
-function splitOtherFoods(raw: unknown): string[] {
+function splitOtherFoodsForSummary(raw: unknown): string[] {
   if (typeof raw !== 'string') return []
   return raw
-    .split('+')
+    .split(' + ')
     .map((item) => item.trim())
-    .filter((item) => item !== '' && item !== '0')
+    .filter(Boolean)
 }
 
 function otherFoodsForInputs(raw: unknown): [string, string] {
-  const parts = splitOtherFoods(raw)
-  if (parts.length === 0) return ['', '']
-  if (parts.length === 1) return [parts[0], '']
-  return [parts[0], parts.slice(1).join(' + ')]
+  if (typeof raw !== 'string' || raw === '') return ['', '']
+  const parsed = raw.split(' + ')
+  const food1 = parsed[0] ?? ''
+  const food2 = parsed.slice(1).join(' + ') || ''
+  return [food1, food2]
 }
 
 function joinOtherFoodsForSave(parts: [string, string]): string {
-  const filtered = parts.map((item) => normalizeFoodText(item)).filter(Boolean)
-  if (filtered.length === 0) return ''
-  return filtered.join(' + ')
+  const [food1, food2] = parts.map((item) => normalizeFoodCellText(item)) as [string, string]
+  if (food1 === '' && food2 === '') return ''
+  return `${food1} + ${food2}`
+}
+
+function formatSlotSummary(slotMaps: Map<string, number>[]): string {
+  const parts: string[] = []
+  for (const slotMap of slotMaps) {
+    const entries = [...slotMap.entries()].sort(([a], [b]) =>
+      a.localeCompare(b, 'zh-Hant'),
+    )
+    for (const [food, count] of entries) {
+      parts.push(`${food} x ${count}`)
+    }
+  }
+  return parts.join('、')
 }
 
 function AbsentSlotIcon() {
@@ -74,7 +87,9 @@ function normalizeDraftMap(
         {
           otherFoods: otherFoodsForInputs(entry?.otherFood),
           otherPrice:
-            entry?.otherPrice == null || Number.isNaN(entry.otherPrice)
+            entry?.otherPrice == null ||
+            Number.isNaN(entry.otherPrice) ||
+            entry.otherPrice === 0
               ? ''
               : String(entry.otherPrice),
           otherIsOnLeave: entry?.otherIsOnLeave ?? false,
@@ -171,7 +186,7 @@ export function OtherStorePanel({
         {
           ...(drafts[p.id] ?? { otherFoods: ['', ''] as [string, string], otherPrice: '', otherIsOnLeave: false }),
           otherFoods: ['', ''] as [string, string],
-          otherPrice: '0',
+          otherPrice: '',
         },
       ]),
     ) as Record<string, EntryDraft>
@@ -191,27 +206,26 @@ export function OtherStorePanel({
   }, [clearPendingSaves, drafts, personnel])
 
   const summary = useMemo(() => {
-    const foodCount = new Map<string, number>()
+    const slotFoodCounts = [new Map<string, number>(), new Map<string, number>()]
     let totalPrice = 0
     for (const p of personnel) {
       const draft = drafts[p.id]
       if (draft?.otherIsOnLeave) continue
-      const foods = draft?.otherFoods ?? ['', '']
       const priceText = (draft?.otherPrice ?? '').trim()
-      for (const food of foods.flatMap((item) => splitOtherFoods(item))) {
+      const foods = splitOtherFoodsForSummary(joinOtherFoodsForSave(draft?.otherFoods ?? ['', '']))
+      for (let idx = 0; idx < foods.length; idx++) {
+        const food = foods[idx]
         if (!food) continue
-        foodCount.set(food, (foodCount.get(food) ?? 0) + 1)
+        const slotMap = slotFoodCounts[idx]
+        if (!slotMap) continue
+        slotMap.set(food, (slotMap.get(food) ?? 0) + 1)
       }
       if (priceText !== '') {
         const n = Number(priceText)
         if (Number.isFinite(n)) totalPrice += n
       }
     }
-    const foodSummary =
-      [...foodCount.entries()]
-        .sort(([a], [b]) => a.localeCompare(b, 'zh-Hant'))
-        .map(([food, count]) => `${food} x ${count}`)
-        .join('、') || '（尚無品項）'
+    const foodSummary = formatSlotSummary(slotFoodCounts) || '（尚無品項）'
     return { foodSummary, totalPrice }
   }, [personnel, drafts])
 
@@ -356,7 +370,7 @@ export function OtherStorePanel({
                                   : 0
                             const nextDraft = {
                               ...draft,
-                              otherPrice: String(nextPrice),
+                              otherPrice: nextPrice === 0 ? '' : String(nextPrice),
                             }
                             try {
                               setDrafts((prev) => ({ ...prev, [p.id]: nextDraft }))

@@ -294,6 +294,19 @@ function buildFoodLineForShop(
   return label
 }
 
+function formatSlotSummaryParts(slotMaps: Map<string, number>[]): string[] {
+  const parts: string[] = []
+  for (const slotMap of slotMaps) {
+    const entries = [...slotMap.entries()].sort(([a], [b]) =>
+      a.localeCompare(b, 'zh-Hant'),
+    )
+    for (const [label, count] of entries) {
+      parts.push(`${label} x ${count}`)
+    }
+  }
+  return parts
+}
+
 /** 產生單行純文字總結（不含表格） */
 function buildShopSummaryLine(
   menuMap: Map<string, MenuItem>,
@@ -301,33 +314,27 @@ function buildShopSummaryLine(
   orders: Order[],
   personnel: Personnel[],
 ): string {
-  const map = new Map<string, number>()
+  const slotMaps: Map<string, number>[] = []
 
   for (const o of orders) {
     const person = personnel.find((p) => p.id === o.userId)
     if (person?.isAbsent) continue
-    if (o.selectedDrinkId) {
-      const drink = menuFromMap(menuMap, o.selectedDrinkId)
-      if (drink && isDrinkItem(drink)) {
-        map.set(drink.name, (map.get(drink.name) ?? 0) + 1)
-      }
-    }
     if (o.selectedFoodId?.trim()) {
       const raw = o.selectedFoodId.trim()
       const segments = splitCurrentFoodSegments(raw)
-      for (const seg of segments) {
+      for (let idx = 0; idx < segments.length; idx++) {
+        const seg = segments[idx]
         const line = labelForFoodSegment(menuMap, menu, seg, person)
         if (line) {
-          map.set(line, (map.get(line) ?? 0) + 1)
+          if (!slotMaps[idx]) slotMaps[idx] = new Map<string, number>()
+          const slotMap = slotMaps[idx]
+          slotMap.set(line, (slotMap.get(line) ?? 0) + 1)
         }
       }
     }
   }
 
-  const entries = [...map.entries()].sort(([a], [b]) =>
-    a.localeCompare(b, 'zh-Hant'),
-  )
-  const parts = entries.map(([label, count]) => `${label} x ${count}`)
+  const parts = formatSlotSummaryParts(slotMaps)
   return parts.length > 0 ? `總結：${parts.join('、')}` : '總結：（尚無品項）'
 }
 
