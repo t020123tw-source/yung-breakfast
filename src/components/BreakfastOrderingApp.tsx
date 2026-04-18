@@ -73,10 +73,8 @@ function splitCurrentFoodSegments(raw: string | null | undefined): string[] {
   return s.split('+').map((item) => item.trim()).filter(Boolean)
 }
 
-/** 選人時：拆成輸入列；無餐點時至少保留一列空白 */
-function mealLinesFromCurrentFood(raw: string | null | undefined): string[] {
-  const parts = splitCurrentFoodSegments(raw)
-  return parts.length > 0 ? parts : ['']
+function emptyMealLines(count: number): string[] {
+  return Array.from({ length: Math.max(1, count) }, () => '')
 }
 
 /** 儲存：過濾空白列後以半形 ` + ` 串回 current_food */
@@ -374,6 +372,17 @@ export function BreakfastOrderingApp({
 
   /** 今日餐點多欄草稿（儲存時拼接為 current_food） */
   const [mealLineDrafts, setMealLineDrafts] = useState<string[]>([''])
+  /** 每位同事目前開啟的餐點欄位數；DB 有值時以 split 後數量為準，空白時保留本地操作數 */
+  const [mealSlotCounts, setMealSlotCounts] = useState<Record<string, number>>(
+    () =>
+      Object.fromEntries(
+        initialPersonnel.map((p) => {
+          const o = initialOrders.find((x) => x.userId === p.id)
+          const count = splitCurrentFoodSegments(o?.selectedFoodId).length
+          return [p.id, Math.max(1, count || 1)]
+        }),
+      ),
+  )
   const [foodRemarkDraft, setFoodRemarkDraft] = useState('')
 
   const [spinPhase, setSpinPhase] = useState<'idle' | 'spinning'>('idle')
@@ -524,9 +533,25 @@ export function BreakfastOrderingApp({
 
   useEffect(() => {
     const o = orders.find((x) => x.userId === selectedPersonId)
-    setMealLineDrafts(mealLinesFromCurrentFood(o?.selectedFoodId))
+    const persisted = splitCurrentFoodSegments(o?.selectedFoodId)
+    const slotCount = Math.max(1, mealSlotCounts[selectedPersonId] ?? 1)
+    setMealLineDrafts(
+      persisted.length > 0 ? persisted : emptyMealLines(slotCount),
+    )
     setFoodRemarkDraft(o?.foodRemark ?? '')
-  }, [selectedPersonId, orders])
+  }, [selectedPersonId, orders, mealSlotCounts])
+
+  useEffect(() => {
+    setMealSlotCounts((prev) => {
+      const next: Record<string, number> = {}
+      for (const p of personnel) {
+        const o = orders.find((x) => x.userId === p.id)
+        const persistedCount = splitCurrentFoodSegments(o?.selectedFoodId).length
+        next[p.id] = persistedCount > 0 ? persistedCount : Math.max(1, prev[p.id] ?? 1)
+      }
+      return next
+    })
+  }, [personnel, orders])
 
   /** 換人時中止抽獎動畫並重置顯示狀態 */
   useEffect(() => {
@@ -681,6 +706,11 @@ export function BreakfastOrderingApp({
       })
       return next
     })
+    setMealSlotCounts((prev) => {
+      const next = { ...prev }
+      delete next[id]
+      return next
+    })
     setOrders((prev) => prev.filter((o) => o.userId !== id))
   }, [personnel.length, selectedPersonId])
 
@@ -697,9 +727,14 @@ export function BreakfastOrderingApp({
             : o,
         ),
       )
+      setMealSlotCounts((prev) => ({ ...prev, [userId]: 1 }))
+      if (userId === selectedPersonId) {
+        setMealLineDrafts([''])
+        setFoodRemarkDraft('')
+      }
       schedulePersist(userId)
     },
-    [schedulePersist],
+    [schedulePersist, selectedPersonId],
   )
 
   /** 將多欄草稿寫入 current_food（與轉盤共用）；全空則清除餐點與餐點備註 */
@@ -723,6 +758,7 @@ export function BreakfastOrderingApp({
         )
         setFoodRemarkDraft('')
         setMealLineDrafts([''])
+        setMealSlotCounts((prev) => ({ ...prev, [selectedPersonId]: 1 }))
       } else {
         setOrders((prev) =>
           prev.map((row) =>
@@ -731,6 +767,10 @@ export function BreakfastOrderingApp({
               : row,
           ),
         )
+        setMealSlotCounts((prev) => ({
+          ...prev,
+          [selectedPersonId]: splitCurrentFoodSegments(joined).length,
+        }))
       }
       schedulePersist(selectedPersonId)
     },
@@ -742,20 +782,29 @@ export function BreakfastOrderingApp({
   }, [mealLineDrafts, persistMealLines])
 
   const addMealLineRow = useCallback(() => {
-    setMealLineDrafts((prev) => [...prev, ''])
-  }, [])
+    if (!selectedPersonId) return
+    setMealLineDrafts((prev) => {
+      const next = [...prev, '']
+      setMealSlotCounts((counts) => ({ ...counts, [selectedPersonId]: next.length }))
+      return next
+    })
+  }, [selectedPersonId])
 
   const removeMealLineRow = useCallback(
     (index: number) => {
-      if (index < 1) return
+      if (index < 1 || !selectedPersonId) return
       setMealLineDrafts((prev) => {
         const next = prev.filter((_, i) => i !== index)
         const normalized = next.length === 0 ? [''] : next
+        setMealSlotCounts((counts) => ({
+          ...counts,
+          [selectedPersonId]: normalized.length,
+        }))
         queueMicrotask(() => persistMealLines(normalized))
         return normalized
       })
     },
-    [persistMealLines],
+    [persistMealLines, selectedPersonId],
   )
 
   /**
@@ -768,8 +817,13 @@ export function BreakfastOrderingApp({
       selectedFoodId: null,
       foodRemark: undefined,
     }))
+    const nextSlotCounts = Object.fromEntries(
+      nextP.map((p) => [p.id, 1]),
+    ) as Record<string, number>
     setPersonnel(nextP)
     setOrders(nextO)
+    setMealSlotCounts(nextSlotCounts)
+    setMealLineDrafts([''])
     void upsertColleagueRows(
       nextO.map((o) => {
         const p = nextP.find((x) => x.id === o.userId)!
@@ -797,6 +851,7 @@ export function BreakfastOrderingApp({
       const p = personnel.find((x) => x.id === o.userId)
       if (!p || p.isAbsent) return o
       if (!foodLineIsEmpty(o.selectedFoodId)) return o
+      const slotCount = Math.max(1, mealSlotCounts[o.userId] ?? 1)
 
       const drink = p.fixedDrinkId
         ? menuFromMap(menuMap, p.fixedDrinkId)
@@ -818,11 +873,13 @@ export function BreakfastOrderingApp({
         }
       }
 
-      const pick = pool[Math.floor(Math.random() * pool.length)]
-      const label = formatFoodLabelForPerson(pick, p)
+      const labels = Array.from({ length: slotCount }, () => {
+        const pick = pool[Math.floor(Math.random() * pool.length)]
+        return formatFoodLabelForPerson(pick, p)
+      })
       return {
         ...o,
-        selectedFoodId: label,
+        selectedFoodId: labels.join(' + '),
         foodRemark: undefined,
       }
     })
@@ -833,7 +890,7 @@ export function BreakfastOrderingApp({
         return p ? colleagueRowFromPersonnelAndOrder(p, o) : null
       }).filter((r) => r != null),
     )
-  }, [personnel, menu, menuMap, globalBudget, orders])
+  }, [personnel, menu, menuMap, globalBudget, orders, mealSlotCounts])
 
   const startWheel = useCallback(() => {
     if (!selectedPersonId || wheelCandidates.length === 0) return
@@ -882,7 +939,20 @@ export function BreakfastOrderingApp({
       }
 
       setShufflePreviewId(pick.id)
-      const mealLabel = formatFoodLabelForPerson(pick, p)
+      const slotCount = Math.max(
+        1,
+        mealLineDrafts.length,
+        mealSlotCounts[selectedPersonId] ?? 1,
+      )
+      const labels = Array.from({ length: slotCount }, (_, idx) =>
+        idx === 0
+          ? formatFoodLabelForPerson(pick, p)
+          : formatFoodLabelForPerson(
+              pool[Math.floor(Math.random() * n)],
+              p,
+            ),
+      )
+      const mealLabel = labels.join(' + ')
       setOrders((prev) =>
         prev.map((o) =>
           o.userId === selectedPersonId
@@ -903,7 +973,15 @@ export function BreakfastOrderingApp({
     }
 
     spinRafRef.current = requestAnimationFrame(run)
-  }, [selectedPersonId, wheelCandidates, personnel, schedulePersist, orders])
+  }, [
+    selectedPersonId,
+    wheelCandidates,
+    personnel,
+    schedulePersist,
+    orders,
+    mealLineDrafts.length,
+    mealSlotCounts,
+  ])
 
   const togglePersonAbsentByDoubleClick = useCallback(
     (id: string) => {
