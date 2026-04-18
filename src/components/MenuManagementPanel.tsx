@@ -92,12 +92,18 @@ export function MenuManagementPanel({
 
   const itemsByCategoryLists = useMemo(
     () =>
-      categoriesFromMenu.map((c) => ({
-        category: c,
-        items: menu
-          .filter((m) => m.categoryId === c.id)
-          .sort((a, b) => a.price - b.price || a.name.localeCompare(b.name, 'zh-Hant')),
-      })),
+      categoriesFromMenu.map((c) => {
+        const isDrinkCategory = c.name.includes('飲料')
+        return {
+          category: c,
+          items: menu.filter((m) => m.categoryId === c.id).sort((a, b) => {
+            if (isDrinkCategory) {
+              return a.name.localeCompare(b.name, 'zh-Hant') || a.price - b.price
+            }
+            return a.price - b.price || a.name.localeCompare(b.name, 'zh-Hant')
+          }),
+        }
+      }),
     [categoriesFromMenu, menu],
   )
 
