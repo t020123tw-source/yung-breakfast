@@ -1,23 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  type MenuItem,
+  compareSummaryLabelsByMenu,
+  isDrinkItem,
+} from '../data/menuData'
 import type { OtherStoreEntry, Personnel } from '../domain/breakfastTypes'
 import { updateColleagueOtherStoreFields } from '../lib/colleagueSupabase'
 
-const SUMMARY_CATEGORY_KEYWORDS = [
-  '吐司',
-  '漢堡',
-  '蛋餅',
-  '厚片',
-  '蘿蔔糕',
-  '鐵板麵',
-  '套餐',
-  '單點',
-  '咖啡',
-  '奶茶',
-  '茶',
-  '豆漿',
-] as const
-
 export type OtherStorePanelProps = {
+  menu: MenuItem[]
   initialPersonnel: Personnel[]
   initialEntries: OtherStoreEntry[]
 }
@@ -33,12 +24,29 @@ function normalizeFoodCellText(raw: unknown): string {
   return raw.trim()
 }
 
-function otherFoodsForInputs(raw: unknown): [string, string] {
+function splitOtherStoreSlots(raw: unknown): [string, string] {
   if (typeof raw !== 'string' || raw === '') return ['', '']
-  const parsed = raw.split(' + ')
-  const food1 = parsed[0] ?? ''
-  const food2 = parsed.slice(1).join(' + ') || ''
-  return [food1, food2]
+  const slots: string[] = []
+  let current = ''
+  let depth = 0
+  for (let i = 0; i < raw.length; i++) {
+    if (depth === 0 && raw.slice(i, i + 3) === ' + ') {
+      slots.push(current.trim())
+      current = ''
+      i += 2
+      continue
+    }
+    const ch = raw[i]
+    if (ch === '(' || ch === '（' || ch === '[') depth += 1
+    current += ch
+    if ((ch === ')' || ch === '）' || ch === ']') && depth > 0) depth -= 1
+  }
+  slots.push(current.trim())
+  return [slots[0] ?? '', slots[1] ?? '']
+}
+
+function otherFoodsForInputs(raw: unknown): [string, string] {
+  return splitOtherStoreSlots(raw)
 }
 
 function joinOtherFoodsForSave(parts: [string, string]): string {
@@ -47,21 +55,60 @@ function joinOtherFoodsForSave(parts: [string, string]): string {
   return `${food1} + ${food2}`
 }
 
-function getSummaryCategoryWeight(label: string): number {
-  const idx = SUMMARY_CATEGORY_KEYWORDS.findIndex((keyword) => label.includes(keyword))
-  return idx >= 0 ? idx : 999
+function appendRemark(label: string, remark: string | null | undefined): string {
+  const text = (remark ?? '').trim()
+  if (!text) return label
+  return `${label}(${text})`
 }
 
-function compareSummaryLabels(a: string, b: string): number {
-  const aWeight = getSummaryCategoryWeight(a)
-  const bWeight = getSummaryCategoryWeight(b)
-  if (aWeight !== bWeight) return aWeight - bWeight
-  return a.localeCompare(b, 'zh-Hant')
+function formatOtherStoreFoodLabel(
+  rawLabel: string,
+  person: Personnel | undefined,
+  menuByName: Map<string, MenuItem>,
+): string {
+  const label = rawLabel.trim()
+  if (!label) return ''
+  const menuItem = menuByName.get(label)
+  if (menuItem && isDrinkItem(menuItem)) {
+    return appendRemark(label, person?.drinkRemark)
+  }
+  return label
 }
 
-function formatOneSlotSummary(slotMap: Map<string, number>): string[] {
+function resolveKnownOtherStorePrice(
+  foods: [string, string],
+  menuByName: Map<string, MenuItem>,
+): number | null {
+  let total = 0
+  let hasAny = false
+  for (const food of foods) {
+    const label = food.trim()
+    if (!label) continue
+    hasAny = true
+    const item = menuByName.get(label)
+    if (!item) return null
+    total += item.price
+  }
+  return hasAny ? total : 0
+}
+
+function promptForOtherStorePrice(
+  label: string,
+  currentValue: string,
+): string {
+  const value = window.prompt(
+    `找不到此餐點金額，請手動輸入金額：\n${label}`,
+    currentValue.trim(),
+  )
+  if (value == null) return currentValue
+  const parsed = Number(value.replace(/[^\d.]/g, ''))
+  if (!Number.isFinite(parsed) || parsed <= 0) return ''
+  return String(Math.round(parsed))
+}
+
+function formatOneSlotSummary(slotMap: Map<string, number>, menu: MenuItem[]): string[] {
   return [...slotMap.entries()]
-    .sort(([a], [b]) => compareSummaryLabels(a, b))
+    .sort(([a], [b]) => compareSummaryLabelsByMenu(a, b, menu))
     .map(([food, count]) => `${food} x ${count}`)
 }
 
@@ -112,6 +159,7 @@ function normalizeDraftMap(
 }
 
 export function OtherStorePanel({
+  menu,
   initialPersonnel,
   initialEntries,
 }: OtherStorePanelProps) {
@@ -120,6 +168,10 @@ export function OtherStorePanel({
     normalizeDraftMap(initialPersonnel, initialEntries),
   )
   const saveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+  const menuByName = useMemo(
+    () => new Map(menu.map((item) => [item.name, item])),
+    [menu],
+  )
 
   useEffect(() => {
     setPersonnel(initialPersonnel)
@@ -197,8 +249,26 @@ export function OtherStorePanel({
         p.id,
         {
           ...(drafts[p.id] ?? { otherFoods: ['', ''] as [string, string], otherPrice: '', otherIsOnLeave: false }),
-          otherFoods: ['', ''] as [string, string],
-          otherPrice: '',
+          otherFoods: (drafts[p.id]?.otherFoods ?? ['', '']).map((food) => {
+            const label = food.trim()
+            return menuByName.has(label) ? '' : label
+          }) as [string, string],
+          otherPrice: (() => {
+            const currentPrice = Number(drafts[p.id]?.otherPrice ?? '')
+            const removedKnownTotal = (drafts[p.id]?.otherFoods ?? ['', '']).reduce(
+              (sum, food) => {
+                const item = menuByName.get(food.trim())
+                return item ? sum + item.price : sum
+              },
+              0,
+            )
+            const keptHasValue = (drafts[p.id]?.otherFoods ?? ['', '']).some(
+              (food) => food.trim() !== '' && !menuByName.has(food.trim()),
+            )
+            if (!keptHasValue) return ''
+            if (!Number.isFinite(currentPrice)) return ''
+            return String(Math.max(0, currentPrice - removedKnownTotal))
+          })(),
         },
       ]),
     ) as Record<string, EntryDraft>
@@ -207,15 +277,18 @@ export function OtherStorePanel({
       await Promise.all(
         personnel.map((p) =>
           updateColleagueOtherStoreFields(p.id, {
-            other_food: '',
-            other_price: 0,
+            other_food: joinOtherFoodsForSave(nextDrafts[p.id]?.otherFoods ?? ['', '']),
+            other_price:
+              nextDrafts[p.id]?.otherPrice.trim() === ''
+                ? 0
+                : Number(nextDrafts[p.id]?.otherPrice ?? 0),
           }),
         ),
       )
     } catch (e) {
       console.error(e)
     }
-  }, [clearPendingSaves, drafts, personnel])
+  }, [clearPendingSaves, drafts, personnel, menuByName])
 
   const summary = useMemo(() => {
     const slot1Map = new Map<string, number>()
@@ -226,8 +299,8 @@ export function OtherStorePanel({
       if (draft?.otherIsOnLeave) continue
       const priceText = (draft?.otherPrice ?? '').trim()
       const [slot1, slot2] = draft?.otherFoods ?? ['', '']
-      const food1 = slot1.trim()
-      const food2 = slot2.trim()
+      const food1 = formatOtherStoreFoodLabel(slot1, p, menuByName)
+      const food2 = formatOtherStoreFoodLabel(slot2, p, menuByName)
       if (food1) slot1Map.set(food1, (slot1Map.get(food1) ?? 0) + 1)
       if (food2) slot2Map.set(food2, (slot2Map.get(food2) ?? 0) + 1)
       if (priceText !== '') {
@@ -236,11 +309,11 @@ export function OtherStorePanel({
       }
     }
     const foodSummaryLines = [
-      ...formatOneSlotSummary(slot1Map),
-      ...formatOneSlotSummary(slot2Map),
+      ...formatOneSlotSummary(slot1Map, menu),
+      ...formatOneSlotSummary(slot2Map, menu),
     ]
     return { foodSummaryLines, totalPrice }
-  }, [personnel, drafts])
+  }, [personnel, drafts, menuByName, menu])
 
   return (
     <div className="w-full text-slate-900">
@@ -328,9 +401,29 @@ export function OtherStorePanel({
                                 onBlur={async () => {
                                   if (draft.otherIsOnLeave) return
                                   const nextFood = joinOtherFoodsForSave(draft.otherFoods)
+                                  const normalizedFoods = otherFoodsForInputs(nextFood)
+                                  const resolvedPrice = resolveKnownOtherStorePrice(
+                                    normalizedFoods,
+                                    menuByName,
+                                  )
+                                  const hasExistingPrice =
+                                    draft.otherPrice.trim() !== '' &&
+                                    Number.isFinite(Number(draft.otherPrice)) &&
+                                    Number(draft.otherPrice) > 0
                                   const nextDraft = {
                                     ...draft,
-                                    otherFoods: otherFoodsForInputs(nextFood),
+                                    otherFoods: normalizedFoods,
+                                    otherPrice:
+                                      resolvedPrice == null
+                                        ? hasExistingPrice
+                                          ? draft.otherPrice
+                                          : promptForOtherStorePrice(
+                                              normalizedFoods.filter(Boolean).join(' + '),
+                                              '',
+                                            )
+                                        : resolvedPrice > 0
+                                          ? String(resolvedPrice)
+                                          : '',
                                   }
                                   try {
                                     setDrafts((prev) => ({ ...prev, [p.id]: nextDraft }))

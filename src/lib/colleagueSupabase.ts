@@ -4,7 +4,7 @@ import { supabase } from './supabaseClient'
 /**
  * 與 Supabase public.colleagues 實際欄位一致：
  * id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent,
- * current_food, current_note, internal_note, is_manual, other_food, other_price, other_is_on_leave, created_at
+ * current_food, current_note, manual_food_price, internal_note, drink_remark, is_manual, other_food, other_price, other_is_on_leave, created_at
  */
 export type ColleagueRow = {
   id: string
@@ -16,7 +16,9 @@ export type ColleagueRow = {
   is_absent: boolean
   current_food: string | null
   current_note: string | null
+  manual_food_price: number | null
   internal_note: string | null
+  drink_remark: string | null
   is_manual: boolean
   other_food: string | null
   other_price: number | null
@@ -35,14 +37,16 @@ export type ColleagueUpsertPayload = {
   is_absent: boolean
   current_food: string | null
   current_note: string | null
+  manual_food_price: number | null
   internal_note: string | null
+  drink_remark: string | null
   is_manual: boolean
 }
 
 /**
  * insert() 僅允許資料表實際存在的欄位（不含 created_at），避免多餘屬性導致 PostgREST 拒絕。
  * 與 colleagues：id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent,
- * current_food, current_note, internal_note, is_manual, other_food, other_price, other_is_on_leave
+ * current_food, current_note, manual_food_price, internal_note, drink_remark, is_manual, other_food, other_price, other_is_on_leave
  */
 export type ColleagueInsertPayload = {
   id: string
@@ -54,7 +58,9 @@ export type ColleagueInsertPayload = {
   is_absent: boolean
   current_food: string | null
   current_note: string | null
+  manual_food_price: number | null
   internal_note: string | null
+  drink_remark: string | null
   is_manual: boolean
   other_food: string | null
   other_price: number | null
@@ -62,7 +68,7 @@ export type ColleagueInsertPayload = {
 }
 
 const COLLEAGUE_SELECT =
-  'id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent, current_food, current_note, internal_note, is_manual, other_food, other_price, other_is_on_leave'
+  'id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent, current_food, current_note, manual_food_price, internal_note, drink_remark, is_manual, other_food, other_price, other_is_on_leave'
 
 const COLLEAGUE_SELECT_LEGACY =
   'id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent, current_food, current_note, internal_note, is_manual'
@@ -86,6 +92,8 @@ function isMissingOtherStoreColumnsError(err: unknown): boolean {
     text.includes('other_food') ||
     text.includes('other_price') ||
     text.includes('other_is_on_leave') ||
+    text.includes('drink_remark') ||
+    text.includes('manual_food_price') ||
     text.includes('column') && text.includes('does not exist')
   )
 }
@@ -104,6 +112,7 @@ export function personnelFromRow(r: ColleagueRow): Personnel {
     fixedDrinkId: r.fixed_drink,
     dislikedFoodIds: normalizeDislikeList(r.dislike_list),
     extraRemark: r.internal_note ?? undefined,
+    drinkRemark: r.drink_remark ?? '',
     requiresUntoastedToast: r.requires_untoasted_toast,
     isAbsent: r.is_absent,
   }
@@ -115,6 +124,7 @@ export function orderFromRow(r: ColleagueRow): Order {
     selectedDrinkId: r.fixed_drink,
     selectedFoodId: r.current_food,
     foodRemark: r.current_note ?? undefined,
+    manualFoodPrice: r.manual_food_price ?? 0,
   }
 }
 
@@ -154,7 +164,9 @@ export function colleagueRowFromPersonnelAndOrder(
     is_absent: p.isAbsent ?? false,
     current_food: mealOrder.selectedFoodId ?? null,
     current_note: mealOrder.foodRemark ?? null,
+    manual_food_price: mealOrder.manualFoodPrice ?? 0,
     internal_note: p.extraRemark ?? null,
+    drink_remark: p.drinkRemark ?? '',
     is_manual: false,
   }
 }
@@ -174,7 +186,7 @@ export async function fetchColleaguesFromSupabase(): Promise<{
   if (primary.error) {
     if (!isMissingOtherStoreColumnsError(primary.error)) throw primary.error
     console.warn(
-      'colleagues.other_food / other_price / other_is_on_leave 可能尚未被 API schema cache 識別，退回舊查詢。',
+      'colleagues.other_food / other_price / other_is_on_leave / drink_remark / manual_food_price 可能尚未被 API schema cache 識別，退回舊查詢。',
       primary.error,
     )
     const legacy = await supabase
@@ -185,9 +197,16 @@ export async function fetchColleaguesFromSupabase(): Promise<{
     if (legacy.error) throw legacy.error
     rows = ((
       legacy.data ?? []
-    ) as Array<Omit<ColleagueRow, 'other_food' | 'other_price' | 'other_is_on_leave'>>).map(
+    ) as Array<
+      Omit<
+        ColleagueRow,
+        'other_food' | 'other_price' | 'other_is_on_leave' | 'drink_remark' | 'manual_food_price'
+      >
+    >).map(
       (row) => ({
         ...row,
+        manual_food_price: 0,
+        drink_remark: '',
         other_food: '',
         other_price: 0,
         other_is_on_leave: false,
@@ -240,7 +259,9 @@ export function buildNewColleagueInsertPayload(
     is_absent: false,
     current_food: null,
     current_note: null,
+    manual_food_price: 0,
     internal_note: null,
+    drink_remark: '',
     is_manual: false,
     other_food: null,
     other_price: null,
@@ -259,7 +280,9 @@ export async function insertColleagueRow(row: ColleagueInsertPayload): Promise<v
     is_absent: row.is_absent,
     current_food: row.current_food,
     current_note: row.current_note,
+    manual_food_price: row.manual_food_price,
     internal_note: row.internal_note,
+    drink_remark: row.drink_remark,
     is_manual: row.is_manual,
     other_food: row.other_food,
     other_price: row.other_price,

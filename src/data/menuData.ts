@@ -141,10 +141,65 @@ export function isDrinkItem(m: MenuItem): boolean {
   return m.categoryId === '飲料'
 }
 
+export function normalizeDrinkBaseName(name: string): string {
+  return name.replace(/[[(（][大中小][)\]）]/g, '').trim()
+}
+
+export function compareMenuItemsForDisplay(a: MenuItem, b: MenuItem): number {
+  const aDrink = isDrinkItem(a)
+  const bDrink = isDrinkItem(b)
+  if (aDrink && bDrink) {
+    return (
+      normalizeDrinkBaseName(a.name).localeCompare(
+        normalizeDrinkBaseName(b.name),
+        'zh-TW',
+      ) ||
+      a.price - b.price ||
+      a.name.localeCompare(b.name, 'zh-TW')
+    )
+  }
+  if (aDrink !== bDrink) return aDrink ? 1 : -1
+  return a.price - b.price || a.name.localeCompare(b.name, 'zh-TW')
+}
+
+export function findMenuItemByLabelPrefix(
+  label: string,
+  menu: MenuItem[],
+): MenuItem | undefined {
+  const trimmed = label.trim()
+  let matched: MenuItem | undefined
+  for (const item of menu) {
+    const exact =
+      trimmed === item.name ||
+      trimmed.startsWith(`${item.name}(`) ||
+      trimmed.startsWith(`${item.name}（`)
+    if (!exact) continue
+    if (!matched || item.name.length > matched.name.length) {
+      matched = item
+    }
+  }
+  return matched
+}
+
+export function compareSummaryLabelsByMenu(
+  a: string,
+  b: string,
+  menu: MenuItem[],
+): number {
+  const aItem = findMenuItemByLabelPrefix(a, menu)
+  const bItem = findMenuItemByLabelPrefix(b, menu)
+  if (aItem && bItem) {
+    return compareMenuItemsForDisplay(aItem, bItem) || a.localeCompare(b, 'zh-TW')
+  }
+  if (aItem && !bItem) return -1
+  if (!aItem && bItem) return 1
+  return a.localeCompare(b, 'zh-TW')
+}
+
 export function getFixedDrinkSelectOptions(menu: MenuItem[]): MenuItem[] {
   return [...menu]
     .filter((m) => isDrinkItem(m))
-    .sort((a, b) => a.name.localeCompare(b.name, 'zh-Hant'))
+    .sort(compareMenuItemsForDisplay)
 }
 
 /**
@@ -155,10 +210,12 @@ export function filterItemsForWheel(
   dislikedIds: ReadonlySet<string>,
   maxMealPrice: number,
 ): MenuItem[] {
-  return menu.filter(
-    (m) =>
-      !isDrinkItem(m) && !dislikedIds.has(m.id) && m.price <= maxMealPrice,
-  )
+  return menu
+    .filter(
+      (m) =>
+        !isDrinkItem(m) && !dislikedIds.has(m.id) && m.price <= maxMealPrice,
+    )
+    .sort(compareMenuItemsForDisplay)
 }
 
 /** 吐司類：類別字串為「吐司」時觸發 (不烤) 顯示邏輯 */

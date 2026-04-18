@@ -10,6 +10,7 @@ import {
 import {
   type MenuCategoryDef,
   type MenuItem,
+  compareSummaryLabelsByMenu,
   filterItemsForWheel,
   getFixedDrinkSelectOptions,
   isDrinkItem,
@@ -43,20 +44,6 @@ export type BreakfastOrderingAppProps = {
 /** 備註含此字串時，單人金額額外加價（對應 current_note） */
 const EGG_REMARK_TOKEN = '+蛋'
 const EGG_EXTRA_PRICE = 15
-const SUMMARY_CATEGORY_KEYWORDS = [
-  '吐司',
-  '漢堡',
-  '蛋餅',
-  '厚片',
-  '蘿蔔糕',
-  '鐵板麵',
-  '套餐',
-  '單點',
-  '咖啡',
-  '奶茶',
-  '茶',
-  '豆漿',
-] as const
 
 function buildMenuMap(menu: MenuItem[]): Map<string, MenuItem> {
   const m = new Map<string, MenuItem>()
@@ -77,24 +64,43 @@ function foodLineIsEmpty(v: string | null | undefined): boolean {
   return splitCurrentFoodSegments(v).length === 0
 }
 
+function splitMealSlotsPreservingParentheses(
+  raw: string | null | undefined,
+): string[] {
+  if (typeof raw !== 'string' || raw === '') return []
+  const slots: string[] = []
+  let current = ''
+  let depth = 0
+  for (let i = 0; i < raw.length; i++) {
+    if (depth === 0 && raw.slice(i, i + 3) === ' + ') {
+      slots.push(current.trim())
+      current = ''
+      i += 2
+      continue
+    }
+    const ch = raw[i]
+    if (ch === '(' || ch === '（' || ch === '[') depth += 1
+    current += ch
+    if ((ch === ')' || ch === '）' || ch === ']') && depth > 0) depth -= 1
+  }
+  slots.push(current.trim())
+  return slots
+}
+
 /**
- * 與計價／彙整／點餐板共用：以 `+` 拆段（容錯各種空白），再 trim、去掉空段。
+ * 與計價／彙整／點餐板共用：只在頂層分隔符 ` + ` 拆段，避免切開括號內的加號。
  */
 function splitCurrentFoodSegments(raw: string | null | undefined): string[] {
-  const s = (raw ?? '').trim()
-  if (!s) return []
-  return s.split('+').map((item) => item.trim()).filter(Boolean)
+  return splitMealSlotsPreservingParentheses(raw).filter(Boolean)
 }
 
 function splitCurrentFoodSlots(raw: string | null | undefined): string[] {
-  if (typeof raw !== 'string' || raw.trim() === '') return []
-  return raw.split('+').map((item) => item.trim())
+  return splitMealSlotsPreservingParentheses(raw)
 }
 
 function mealSlotCountFromCurrentFood(raw: string | null | undefined): number {
-  const segments = splitCurrentFoodSegments(raw)
   if (raw == null) return 1
-  return Math.max(1, segments.length, raw.split('+').length)
+  return Math.max(1, splitCurrentFoodSlots(raw).length)
 }
 
 function emptyMealLines(count: number): string[] {
@@ -105,10 +111,10 @@ function mealLinesForEditor(
   raw: string | null | undefined,
   slotCount: number,
 ): string[] {
-  const segments = splitCurrentFoodSegments(raw)
-  if (segments.length === 0) return emptyMealLines(slotCount)
-  if (segments.length >= slotCount) return segments
-  return [...segments, ...emptyMealLines(slotCount - segments.length)]
+  const slots = splitCurrentFoodSlots(raw)
+  if (slots.length === 0) return emptyMealLines(slotCount)
+  if (slots.length >= slotCount) return slots
+  return [...slots, ...emptyMealLines(slotCount - slots.length)]
 }
 
 function serializeEmptyMealSlots(count: number): string {
@@ -120,6 +126,10 @@ function joinMealLinesToCurrentFood(lines: string[]): string | null {
   const filtered = lines.map((x) => x.trim()).filter(Boolean)
   if (filtered.length === 0) return null
   return filtered.join(' + ')
+}
+
+function joinMealSlotsPreservingStructure(lines: string[]): string {
+  return lines.map((x) => x.trim()).join(' + ')
 }
 
 function pickDistinctMealLabelsForPerson(
@@ -145,21 +155,26 @@ function pickDistinctMealLabelsForPerson(
 function sumFoodPricesFromCurrentFood(
   raw: string,
   menu: MenuItem[],
+  manualFoodPrice: number | null | undefined,
 ): { sum: number; hasUnpricedSegment: boolean } {
   const segments = splitCurrentFoodSegments(raw)
   if (segments.length === 0) return { sum: 0, hasUnpricedSegment: false }
   let sum = 0
-  let hasUnpricedSegment = false
+  let missingCount = 0
   for (const seg of segments) {
     const byId = menu.find((m) => m.id === seg)
     const item = byId ?? menu.find((m) => m.name === seg)
     if (item) {
       sum += item.price
     } else {
-      hasUnpricedSegment = true
+      missingCount += 1
     }
   }
-  return { sum, hasUnpricedSegment }
+  const manual = Number.isFinite(Number(manualFoodPrice)) ? Number(manualFoodPrice) : 0
+  if (missingCount > 0 && manual > 0) {
+    sum += manual
+  }
+  return { sum, hasUnpricedSegment: missingCount > 0 && manual <= 0 }
 }
 
 /**
@@ -199,6 +214,7 @@ function computeColleagueOrderTotal(
   const { sum: foodPrice, hasUnpricedSegment } = sumFoodPricesFromCurrentFood(
     rawFood,
     menu,
+    o.manualFoodPrice,
   )
   const foodOk = rawFood === '' || !hasUnpricedSegment
 
@@ -212,29 +228,51 @@ function computeColleagueOrderTotal(
   return { total, hasUnpriced }
 }
 
-/** 依人員設定：僅對非飲料類餐點加註，例如吐司類可自動加 (不烤) */
+function appendDisplayRemark(label: string, remark: string | null | undefined): string {
+  const text = (remark ?? '').trim()
+  if (!text) return label
+  return `${label}(${text})`
+}
+
+function resolveMealItemFromSegment(
+  segment: string,
+  menuMap: Map<string, MenuItem>,
+  menu: MenuItem[],
+): MenuItem | undefined {
+  const t = segment.trim()
+  if (!t) return undefined
+  return menuFromMap(menuMap, t) ?? menu.find((m) => m.name === t)
+}
+
+function promptForManualFoodPrice(
+  label: string,
+  initialValue: number | null | undefined,
+): number {
+  const fallback =
+    initialValue != null && Number.isFinite(initialValue) && initialValue > 0
+      ? String(initialValue)
+      : ''
+  const value = window.prompt(
+    `找不到此餐點金額，請手動輸入金額：\n${label}`,
+    fallback,
+  )
+  if (value == null) return Number(initialValue ?? 0) || 0
+  const parsed = Number(value.replace(/[^\d.]/g, ''))
+  return Number.isFinite(parsed) ? Math.max(0, Math.round(parsed)) : 0
+}
+
+/** 依人員設定：餐點走 foodRemark，飲料走 drinkRemark；吐司類可自動加 (不烤) */
 function formatFoodLabelForPerson(
   food: MenuItem,
   person: Personnel | undefined,
+  options?: { foodRemark?: string | null | undefined },
 ): string {
   let s = food.name
-  if (isDrinkItem(food)) return s
+  if (isDrinkItem(food)) return appendDisplayRemark(s, person?.drinkRemark)
   if (person?.requiresUntoastedToast && isToastItem(food)) {
     s += '(不烤)'
   }
-  return s
-}
-
-function getSummaryCategoryWeight(label: string): number {
-  const idx = SUMMARY_CATEGORY_KEYWORDS.findIndex((keyword) => label.includes(keyword))
-  return idx >= 0 ? idx : 999
-}
-
-function compareSummaryLabels(a: string, b: string): number {
-  const aWeight = getSummaryCategoryWeight(a)
-  const bWeight = getSummaryCategoryWeight(b)
-  if (aWeight !== bWeight) return aWeight - bWeight
-  return a.localeCompare(b, 'zh-Hant')
+  return appendDisplayRemark(s, options?.foodRemark)
 }
 
 /** 休假狀態：飲料／餐點格內之小紅圓＋白叉（置中） */
@@ -292,15 +330,16 @@ function labelForFoodSegment(
   menu: MenuItem[],
   segment: string,
   person: Personnel | undefined,
+  foodRemark?: string | null | undefined,
 ): string | null {
   const t = segment.trim()
   if (!t) return null
   const byId = menuFromMap(menuMap, t)
   const food = byId ?? menu.find((m) => m.name === t)
   if (food) {
-    return formatFoodLabelForPerson(food, person)
+    return formatFoodLabelForPerson(food, person, { foodRemark })
   }
-  return t
+  return appendDisplayRemark(t, foodRemark)
 }
 
 function buildFoodLineForShop(
@@ -314,20 +353,18 @@ function buildFoodLineForShop(
   const segments = splitCurrentFoodSegments(raw)
   if (segments.length === 0) return null
   const parts: string[] = []
+  const foodRemark = o.foodRemark ?? ''
   for (const seg of segments) {
-    const lab = labelForFoodSegment(menuMap, menu, seg, person)
+    const lab = labelForFoodSegment(menuMap, menu, seg, person, foodRemark)
     if (lab) parts.push(lab)
   }
   if (parts.length === 0) return null
-  let label = parts.join(' + ')
-  const fr = (o.foodRemark ?? '').trim()
-  if (fr) label += `（${fr}）`
-  return label
+  return parts.join(' + ')
 }
 
-function formatOneSlotSummary(slotMap: Map<string, number>): string[] {
+function formatOneSlotSummary(slotMap: Map<string, number>, menu: MenuItem[]): string[] {
   return [...slotMap.entries()]
-    .sort(([a], [b]) => compareSummaryLabels(a, b))
+    .sort(([a], [b]) => compareSummaryLabelsByMenu(a, b, menu))
     .map(([label, count]) => `${label} x ${count}`)
 }
 
@@ -337,24 +374,40 @@ function buildShopSummaryLines(
   orders: Order[],
   personnel: Personnel[],
 ): string[] {
+  const drinkMap = new Map<string, number>()
   const slot1Map = new Map<string, number>()
   const slot2Map = new Map<string, number>()
 
   for (const o of orders) {
     const person = personnel.find((p) => p.id === o.userId)
     if (person?.isAbsent) continue
+    if (o.selectedDrinkId?.trim()) {
+      const drinkItem =
+        menuFromMap(menuMap, o.selectedDrinkId) ??
+        menu.find((m) => m.name === o.selectedDrinkId)
+      const drinkLine = drinkItem
+        ? formatFoodLabelForPerson(drinkItem, person)
+        : appendDisplayRemark(o.selectedDrinkId, person?.drinkRemark)
+      if (drinkLine) {
+        drinkMap.set(drinkLine, (drinkMap.get(drinkLine) ?? 0) + 1)
+      }
+    }
     if (o.selectedFoodId?.trim()) {
       const slots = splitCurrentFoodSlots(o.selectedFoodId)
       const slot1 = slots[0] ?? ''
       const slot2 = slots[1] ?? ''
-      const line1 = labelForFoodSegment(menuMap, menu, slot1, person)
-      const line2 = labelForFoodSegment(menuMap, menu, slot2, person)
+      const line1 = labelForFoodSegment(menuMap, menu, slot1, person, o.foodRemark)
+      const line2 = labelForFoodSegment(menuMap, menu, slot2, person, o.foodRemark)
       if (line1) slot1Map.set(line1, (slot1Map.get(line1) ?? 0) + 1)
       if (line2) slot2Map.set(line2, (slot2Map.get(line2) ?? 0) + 1)
     }
   }
 
-  return [...formatOneSlotSummary(slot1Map), ...formatOneSlotSummary(slot2Map)]
+  return [
+    ...formatOneSlotSummary(drinkMap, menu),
+    ...formatOneSlotSummary(slot1Map, menu),
+    ...formatOneSlotSummary(slot2Map, menu),
+  ]
 }
 
 export function BreakfastOrderingApp({
@@ -365,7 +418,11 @@ export function BreakfastOrderingApp({
   selectPersonIdOnMount,
   onColleaguesSynced,
 }: BreakfastOrderingAppProps) {
-  const [budgetInput, setBudgetInput] = useState('120')
+  const [budgetInput, setBudgetInput] = useState(() => {
+    if (typeof window === 'undefined') return '120'
+    const saved = window.localStorage.getItem('budget')
+    return saved && saved.trim() !== '' ? saved : '120'
+  })
   const globalBudget = useMemo(() => {
     const n = parseInt(budgetInput.replace(/\D/g, ''), 10)
     return Number.isFinite(n) ? Math.min(999999, Math.max(0, n)) : 0
@@ -412,6 +469,11 @@ export function BreakfastOrderingApp({
       }
     }
   }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    window.localStorage.setItem('budget', budgetInput)
+  }, [budgetInput])
 
   useEffect(() => {
     const ids = [...persistIdsRef.current]
@@ -641,7 +703,8 @@ export function BreakfastOrderingApp({
       )
       const debounced =
         Object.prototype.hasOwnProperty.call(patch, 'name') ||
-        Object.prototype.hasOwnProperty.call(patch, 'extraRemark')
+        Object.prototype.hasOwnProperty.call(patch, 'extraRemark') ||
+        Object.prototype.hasOwnProperty.call(patch, 'drinkRemark')
       if (debounced) schedulePersistDebounced(id)
       else schedulePersist(id)
     },
@@ -783,6 +846,7 @@ export function BreakfastOrderingApp({
                 ...o,
                 selectedFoodId: null,
                 foodRemark: undefined,
+                manualFoodPrice: 0,
               }
             : o,
         ),
@@ -804,6 +868,7 @@ export function BreakfastOrderingApp({
       const p = personnel.find((x) => x.id === selectedPersonId)
       if (p?.isAbsent) return
       const joined = joinMealLinesToCurrentFood(lines)
+      const currentOrder = orders.find((row) => row.userId === selectedPersonId)
       if (joined === null) {
         const emptyStructure = serializeEmptyMealSlots(lines.length)
         setOrders((prev) =>
@@ -813,6 +878,7 @@ export function BreakfastOrderingApp({
                   ...row,
                   selectedFoodId: emptyStructure,
                   foodRemark: undefined,
+                  manualFoodPrice: 0,
                 }
               : row,
           ),
@@ -821,10 +887,30 @@ export function BreakfastOrderingApp({
         setMealLineDrafts(emptyMealLines(lines.length))
         setMealSlotCounts((prev) => ({ ...prev, [selectedPersonId]: lines.length }))
       } else {
+        const unmatchedSegments = splitCurrentFoodSegments(joined).filter(
+          (segment) => !resolveMealItemFromSegment(segment, menuMap, menu),
+        )
+        const shouldPromptManualPrice =
+          unmatchedSegments.length > 0 &&
+          (currentOrder?.selectedFoodId !== joined ||
+            (currentOrder?.manualFoodPrice ?? 0) <= 0)
+        const nextManualFoodPrice =
+          shouldPromptManualPrice
+            ? promptForManualFoodPrice(
+                unmatchedSegments.join(' + '),
+                currentOrder?.manualFoodPrice ?? 0,
+              )
+            : unmatchedSegments.length > 0
+              ? currentOrder?.manualFoodPrice ?? 0
+              : 0
         setOrders((prev) =>
           prev.map((row) =>
             row.userId === selectedPersonId
-              ? { ...row, selectedFoodId: joined }
+              ? {
+                  ...row,
+                  selectedFoodId: joined,
+                  manualFoodPrice: nextManualFoodPrice,
+                }
               : row,
           ),
         )
@@ -835,7 +921,7 @@ export function BreakfastOrderingApp({
       }
       schedulePersist(selectedPersonId)
     },
-    [selectedPersonId, personnel, schedulePersist],
+    [selectedPersonId, personnel, orders, menuMap, menu, schedulePersist],
   )
 
   const commitMealLines = useCallback(() => {
@@ -876,18 +962,37 @@ export function BreakfastOrderingApp({
     const nextSlotCounts = Object.fromEntries(
       nextP.map((p) => [p.id, Math.max(1, mealSlotCounts[p.id] ?? 1)]),
     ) as Record<string, number>
-    const nextO = orders.map((o) => ({
-      ...o,
-      selectedFoodId: serializeEmptyMealSlots(
-        Math.max(1, nextSlotCounts[o.userId] ?? 1),
-      ),
-      foodRemark: undefined,
-    }))
+    const nextO = orders.map((o) => {
+      const existingSlots = splitCurrentFoodSlots(o.selectedFoodId)
+      const slotCount = Math.max(
+        1,
+        existingSlots.length,
+        nextSlotCounts[o.userId] ?? 1,
+      )
+      const normalizedSlots =
+        existingSlots.length >= slotCount
+          ? existingSlots
+          : [...existingSlots, ...emptyMealLines(slotCount - existingSlots.length)]
+      const keptSlots = normalizedSlots.map((slot) => {
+        const item = resolveMealItemFromSegment(slot, menuMap, menu)
+        return item ? '' : slot.trim()
+      })
+      const hasManualMeal = keptSlots.some(Boolean)
+      return {
+        ...o,
+        selectedFoodId: joinMealSlotsPreservingStructure(keptSlots),
+        foodRemark: hasManualMeal ? o.foodRemark : undefined,
+        manualFoodPrice: hasManualMeal ? o.manualFoodPrice ?? 0 : 0,
+      }
+    })
     setPersonnel(nextP)
     setOrders(nextO)
     setMealSlotCounts(nextSlotCounts)
     setMealLineDrafts(
-      emptyMealLines(Math.max(1, nextSlotCounts[selectedPersonId] ?? 1)),
+      mealLinesForEditor(
+        nextO.find((o) => o.userId === selectedPersonId)?.selectedFoodId,
+        Math.max(1, nextSlotCounts[selectedPersonId] ?? 1),
+      ),
     )
     void upsertColleagueRows(
       nextO.map((o) => {
@@ -895,7 +1000,7 @@ export function BreakfastOrderingApp({
         return colleagueRowFromPersonnelAndOrder(p, o)
       }),
     )
-  }, [personnel, orders, mealSlotCounts, selectedPersonId])
+  }, [personnel, orders, mealSlotCounts, selectedPersonId, menuMap, menu])
 
   /**
    * 一鍵全員轉盤：略過休假；僅對 current_food 為空者抽籤，寫入品項顯示名稱（與手動輸入同欄）。
@@ -935,6 +1040,7 @@ export function BreakfastOrderingApp({
           ...o,
           selectedFoodId: serializeEmptyMealSlots(slotCount),
           foodRemark: undefined,
+          manualFoodPrice: 0,
         }
       }
 
@@ -943,6 +1049,7 @@ export function BreakfastOrderingApp({
         ...o,
         selectedFoodId: labels.join(' + '),
         foodRemark: undefined,
+        manualFoodPrice: 0,
       }
     })
     setOrders(nextO)
@@ -1015,6 +1122,7 @@ export function BreakfastOrderingApp({
                 ...o,
                 selectedFoodId: mealLabel,
                 foodRemark: undefined,
+                manualFoodPrice: 0,
               }
             : o,
         ),
@@ -1053,6 +1161,7 @@ export function BreakfastOrderingApp({
             ...o,
             selectedFoodId: null,
             foodRemark: undefined,
+            manualFoodPrice: 0,
           }
         }
         const np = nextPersonnel.find((x) => x.id === id)!
@@ -1142,6 +1251,7 @@ export function BreakfastOrderingApp({
           fixedDrinkId: null,
           dislikedFoodIds: [],
           extraRemark: undefined,
+          drinkRemark: '',
           requiresUntoastedToast: false,
           isAbsent: false,
         }
@@ -1150,6 +1260,7 @@ export function BreakfastOrderingApp({
           selectedDrinkId: null,
           selectedFoodId: null,
           foodRemark: undefined,
+          manualFoodPrice: 0,
         }
         setPersonnel((prev) => [...prev, p])
         setOrders((prev) => [...prev, o])
@@ -1199,13 +1310,12 @@ export function BreakfastOrderingApp({
     if (p.isAbsent) {
       return { name: p.name, drinkName: '', mealLine: '', mealSegments: [], mealRemark: '' }
     }
-    const drinkName = o.selectedDrinkId
-      ? menuFromMap(menuMap, o.selectedDrinkId)?.name ?? ''
-      : ''
+    const drinkItem = o.selectedDrinkId ? menuFromMap(menuMap, o.selectedDrinkId) : undefined
+    const drinkName = drinkItem ? formatFoodLabelForPerson(drinkItem, p) : ''
     const mealSegments = splitCurrentFoodSegments(o.selectedFoodId).map(
-      (seg) => labelForFoodSegment(menuMap, menu, seg, p) ?? seg,
+      (seg) => labelForFoodSegment(menuMap, menu, seg, p, o.foodRemark) ?? seg,
     )
-    const mealRemark = (o.foodRemark ?? '').trim()
+    const mealRemark = ''
     const mealLine = buildFoodLineForShop(menuMap, menu, o, p) ?? ''
     return { name: p.name, drinkName, mealLine, mealSegments, mealRemark }
   }
@@ -1221,14 +1331,14 @@ export function BreakfastOrderingApp({
       const item =
         menuFromMap(menuMap, seg) ?? menu.find((m) => m.name === seg)
       if (item) {
-        const base = formatFoodLabelForPerson(item, selectedPerson)
+        const base = formatFoodLabelForPerson(item, selectedPerson, {
+          foodRemark: fr,
+        })
         return `${base}（$${item.price}）`
       }
-      return `${seg}（未入價）`
+      return `${appendDisplayRemark(seg, fr)}（未入價）`
     })
-    let s = parts.join(' + ')
-    if (fr) s += `（${fr}）`
-    return s
+    return parts.join(' + ')
   }, [selectedPerson, currentOrder, menuMap, menu])
 
   return (
@@ -1289,6 +1399,10 @@ export function BreakfastOrderingApp({
                           autoComplete="off"
                           value={budgetInput}
                           onChange={(e) => setBudgetInput(e.target.value)}
+                          onBlur={(e) => {
+                            if (typeof window === 'undefined') return
+                            window.localStorage.setItem('budget', e.target.value)
+                          }}
                           aria-label="全域預算（每人餐點上限）"
                           className="w-[3.25rem] min-w-0 appearance-none border-0 bg-transparent py-0 text-right text-xs font-semibold tabular-nums outline-none ring-0 focus:ring-0 sm:w-[3.75rem] sm:text-sm [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                         />
@@ -1718,7 +1832,7 @@ export function BreakfastOrderingApp({
               <div className="mt-2 flex flex-col gap-2 border-t border-amber-100/80 pt-2.5">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-2">
                   <label className="block min-w-0 flex-1 text-xs font-medium text-slate-800">
-                    餐點備註 (顯示於列表)
+                    餐點忌口 / 備註
                     <input
                       type="text"
                       value={foodRemarkDraft}
@@ -1743,6 +1857,22 @@ export function BreakfastOrderingApp({
                     ＋蛋
                   </button>
                 </div>
+                <label className="block text-xs font-medium text-slate-800">
+                  飲料備註
+                  <input
+                    type="text"
+                    value={selectedPerson.drinkRemark ?? ''}
+                    onChange={(e) =>
+                      patchPersonnel(selectedPersonId, {
+                        drinkRemark: e.target.value,
+                      })
+                    }
+                    onBlur={() => schedulePersist(selectedPersonId)}
+                    placeholder="例如：半糖少冰"
+                    autoComplete="off"
+                    className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm outline-none ring-amber-400/30 focus:ring-2"
+                  />
+                </label>
                 <label className="block text-xs font-medium text-slate-700">
                   其他備註 (僅限內部查看)
                   <input

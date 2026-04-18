@@ -8,6 +8,8 @@ export type Personnel = {
   dislikedFoodIds: string[]
   /** 其他備註（僅內部查看；不顯示於同事列表與店家彙整） */
   extraRemark?: string
+  /** 飲料備註：僅套用於飲料類品項與固定飲料 */
+  drinkRemark?: string
   /** 勾選後，該員點吐司類餐點時自動加 (不烤) */
   requiresUntoastedToast?: boolean
   /** 休假：飲料／餐點格顯示紅底白叉圖示，不列入店家彙整 */
@@ -25,6 +27,8 @@ export type Order = {
   selectedFoodId: string | null
   /** 餐點備註（對外：顯示於同事列表與店家彙整） */
   foodRemark?: string
+  /** 手動輸入且未對應菜單時的總金額 */
+  manualFoodPrice?: number | null
 }
 
 /** 其他店家頁使用：手動輸入餐點與金額 */

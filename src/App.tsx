@@ -263,6 +263,7 @@ function App() {
               ) : (
                 <OtherStorePanel
                   key={orderDataKey}
+                  menu={menu}
                   initialPersonnel={orderPersonnel}
                   initialEntries={otherStoreEntries}
                 />
