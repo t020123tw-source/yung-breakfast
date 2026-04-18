@@ -40,14 +40,24 @@ function joinOtherFoodsForSave(parts: [string, string]): string {
   return filtered.join(' + ')
 }
 
-function AbsentMark() {
+function AbsentSlotIcon() {
   return (
     <span
-      className="inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-rose-600 text-[10px] font-bold leading-none text-white"
-      aria-label="休假"
+      className="inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-red-600 text-white shadow-sm ring-1 ring-red-700/30"
       role="img"
+      aria-label="休假"
     >
-      ×
+      <svg
+        viewBox="0 0 24 24"
+        className="size-3.5"
+        aria-hidden
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={3}
+        strokeLinecap="round"
+      >
+        <path d="M7 7l10 10M17 7L7 17" />
+      </svg>
     </span>
   )
 }
@@ -249,110 +259,122 @@ export function OtherStorePanel({
                         title={`${p.name}（雙擊切換休假）`}
                         className={`flex min-h-[2.2rem] min-w-0 flex-1 items-center justify-center rounded-lg border px-1 py-0.5 text-center text-xs font-semibold leading-tight shadow-sm sm:text-sm ${
                           draft.otherIsOnLeave
-                            ? 'border-rose-200/90 bg-rose-50 text-rose-900 opacity-80'
+                            ? 'border-slate-200/90 bg-slate-100 text-slate-500 opacity-60'
                             : 'border-slate-200/90 bg-slate-100 text-slate-900'
                         }`}
                       >
-                        <span className="flex min-w-0 items-center justify-center gap-1">
-                          <span className="line-clamp-2 break-words">{p.name}</span>
-                          {draft.otherIsOnLeave ? <AbsentMark /> : null}
-                        </span>
+                        <span className="line-clamp-2 break-words">{p.name}</span>
                       </button>
                     </div>
 
                     <div className="flex min-h-[2.2rem] min-w-0 flex-1 items-stretch">
                       <div className="grid min-h-[2.2rem] w-full min-w-0 grid-cols-2 gap-2">
-                        {draft.otherFoods.map((food, idx) => (
-                          <input
-                            key={`${p.id}-other-food-${idx}`}
-                            type="text"
-                            value={food}
-                            onChange={(e) => {
-                              const nextDraft = {
-                                ...draft,
-                                otherFoods: draft.otherFoods.map((item, i) =>
-                                  i === idx ? e.target.value : item,
-                                ) as [string, string],
-                              }
-                              setDrafts((prev) => ({
-                                ...prev,
-                                [p.id]: nextDraft,
-                              }))
-                              if (!nextDraft.otherIsOnLeave) {
-                                schedulePersistDraft(p.id, nextDraft)
-                              }
-                            }}
-                            onBlur={async () => {
-                              if (draft.otherIsOnLeave) return
-                              const nextFood = joinOtherFoodsForSave(draft.otherFoods)
-                              const nextDraft = {
-                                ...draft,
-                                otherFoods: otherFoodsForInputs(nextFood),
-                              }
-                              try {
-                                setDrafts((prev) => ({ ...prev, [p.id]: nextDraft }))
-                                await flushPersistDraft(p.id, nextDraft)
-                                setDrafts((prev) => ({
-                                  ...prev,
-                                  [p.id]: nextDraft,
-                                }))
-                              } catch (e) {
-                                console.error(e)
-                              }
-                            }}
-                            placeholder={`餐點 ${idx + 1}`}
-                            autoComplete="off"
-                            disabled={!!draft.otherIsOnLeave}
-                            className="min-h-[2.2rem] min-w-0 w-full rounded-lg border border-slate-200/90 bg-white px-2 py-0.5 text-xs leading-tight text-slate-900 outline-none ring-amber-400/30 focus:ring-2 sm:text-sm"
-                          />
-                        ))}
+                        {draft.otherIsOnLeave
+                          ? draft.otherFoods.map((_, idx) => (
+                              <div
+                                key={`${p.id}-other-food-absent-${idx}`}
+                                className="flex min-h-[2.2rem] min-w-0 items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100"
+                              >
+                                <AbsentSlotIcon />
+                              </div>
+                            ))
+                          : draft.otherFoods.map((food, idx) => (
+                              <input
+                                key={`${p.id}-other-food-${idx}`}
+                                type="text"
+                                value={food}
+                                onChange={(e) => {
+                                  const nextDraft = {
+                                    ...draft,
+                                    otherFoods: draft.otherFoods.map((item, i) =>
+                                      i === idx ? e.target.value : item,
+                                    ) as [string, string],
+                                  }
+                                  setDrafts((prev) => ({
+                                    ...prev,
+                                    [p.id]: nextDraft,
+                                  }))
+                                  if (!nextDraft.otherIsOnLeave) {
+                                    schedulePersistDraft(p.id, nextDraft)
+                                  }
+                                }}
+                                onBlur={async () => {
+                                  if (draft.otherIsOnLeave) return
+                                  const nextFood = joinOtherFoodsForSave(draft.otherFoods)
+                                  const nextDraft = {
+                                    ...draft,
+                                    otherFoods: otherFoodsForInputs(nextFood),
+                                  }
+                                  try {
+                                    setDrafts((prev) => ({ ...prev, [p.id]: nextDraft }))
+                                    await flushPersistDraft(p.id, nextDraft)
+                                    setDrafts((prev) => ({
+                                      ...prev,
+                                      [p.id]: nextDraft,
+                                    }))
+                                  } catch (e) {
+                                    console.error(e)
+                                  }
+                                }}
+                                placeholder={`餐點 ${idx + 1}`}
+                                autoComplete="off"
+                                disabled={!!draft.otherIsOnLeave}
+                                className="min-h-[2.2rem] min-w-0 w-full rounded-lg border border-slate-200/90 bg-white px-2 py-0.5 text-xs leading-tight text-slate-900 outline-none ring-amber-400/30 focus:ring-2 sm:text-sm"
+                              />
+                            ))}
                       </div>
                     </div>
 
                     <div className="flex w-16 shrink-0 min-h-[2.2rem] min-w-0 items-stretch">
-                      <input
-                        type="text"
-                        inputMode="decimal"
-                        value={draft.otherPrice}
-                        onChange={(e) => {
-                          const nextDraft = { ...draft, otherPrice: e.target.value }
-                          setDrafts((prev) => ({
-                            ...prev,
-                            [p.id]: nextDraft,
-                          }))
-                          if (!nextDraft.otherIsOnLeave) {
-                            schedulePersistDraft(p.id, nextDraft)
-                          }
-                        }}
-                        onBlur={async () => {
-                          if (draft.otherIsOnLeave) return
-                          const priceText = draft.otherPrice.trim()
-                          const nextPrice =
-                            priceText === ''
-                              ? 0
-                              : Number.isFinite(Number(priceText))
-                                ? Number(priceText)
-                                : 0
-                          const nextDraft = {
-                            ...draft,
-                            otherPrice: String(nextPrice),
-                          }
-                          try {
-                            setDrafts((prev) => ({ ...prev, [p.id]: nextDraft }))
-                            await flushPersistDraft(p.id, nextDraft)
+                      {draft.otherIsOnLeave ? (
+                        <div className="flex min-h-[2.2rem] w-full items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100">
+                          <AbsentSlotIcon />
+                        </div>
+                      ) : (
+                        <input
+                          type="text"
+                          inputMode="decimal"
+                          value={draft.otherPrice}
+                          onChange={(e) => {
+                            const nextDraft = { ...draft, otherPrice: e.target.value }
                             setDrafts((prev) => ({
                               ...prev,
                               [p.id]: nextDraft,
                             }))
-                          } catch (e) {
-                            console.error(e)
-                          }
-                        }}
-                        placeholder="金額"
-                        autoComplete="off"
-                        disabled={!!draft.otherIsOnLeave}
-                        className="min-h-[2.2rem] w-full rounded-lg border border-slate-200/90 bg-white px-2 py-0.5 text-right text-xs font-medium leading-tight text-slate-900 outline-none ring-amber-400/30 focus:ring-2 sm:text-sm"
-                      />
+                            if (!nextDraft.otherIsOnLeave) {
+                              schedulePersistDraft(p.id, nextDraft)
+                            }
+                          }}
+                          onBlur={async () => {
+                            if (draft.otherIsOnLeave) return
+                            const priceText = draft.otherPrice.trim()
+                            const nextPrice =
+                              priceText === ''
+                                ? 0
+                                : Number.isFinite(Number(priceText))
+                                  ? Number(priceText)
+                                  : 0
+                            const nextDraft = {
+                              ...draft,
+                              otherPrice: String(nextPrice),
+                            }
+                            try {
+                              setDrafts((prev) => ({ ...prev, [p.id]: nextDraft }))
+                              await flushPersistDraft(p.id, nextDraft)
+                              setDrafts((prev) => ({
+                                ...prev,
+                                [p.id]: nextDraft,
+                              }))
+                            } catch (e) {
+                              console.error(e)
+                            }
+                          }}
+                          placeholder="金額"
+                          autoComplete="off"
+                          disabled={!!draft.otherIsOnLeave}
+                          className="min-h-[2.2rem] w-full rounded-lg border border-slate-200/90 bg-white px-2 py-0.5 text-right text-xs font-medium leading-tight text-slate-900 outline-none ring-amber-400/30 focus:ring-2 sm:text-sm"
+                        />
+                      )}
                     </div>
                   </div>
                 </li>
