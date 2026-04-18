@@ -52,7 +52,7 @@ function categoryEmoji(c: MenuCategoryDef): string {
 }
 
 function getDrinkBaseName(name: string): string {
-  return name.replace(/^\([^()]+\)\s*/, '').trim()
+  return name.replace(/[[(（][大中小][)\]）]/g, '').trim()
 }
 
 export function MenuManagementPanel({
@@ -102,11 +102,12 @@ export function MenuManagementPanel({
           category: c,
           items: menu.filter((m) => m.categoryId === c.id).sort((a, b) => {
             if (isDrinkCategory) {
-              return (
-                getDrinkBaseName(a.name).localeCompare(getDrinkBaseName(b.name), 'zh-Hant') ||
-                a.price - b.price ||
-                a.name.localeCompare(b.name, 'zh-Hant')
-              )
+              const baseA = getDrinkBaseName(a.name)
+              const baseB = getDrinkBaseName(b.name)
+              if (baseA !== baseB) {
+                return baseA.localeCompare(baseB, 'zh-TW')
+              }
+              return a.price - b.price
             }
             return a.price - b.price || a.name.localeCompare(b.name, 'zh-Hant')
           }),
