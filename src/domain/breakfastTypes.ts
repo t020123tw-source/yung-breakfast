@@ -26,3 +26,10 @@ export type Order = {
   /** 餐點備註（對外：顯示於同事列表與店家彙整） */
   foodRemark?: string
 }
+
+/** 其他店家頁使用：手動輸入餐點與金額 */
+export type OtherStoreEntry = {
+  userId: string
+  otherFood?: string
+  otherPrice?: number | null
+}

@@ -1,10 +1,10 @@
-import type { Order, Personnel } from '../domain/breakfastTypes'
+import type { Order, OtherStoreEntry, Personnel } from '../domain/breakfastTypes'
 import { supabase } from './supabaseClient'
 
 /**
  * 與 Supabase public.colleagues 實際欄位一致：
  * id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent,
- * current_food, current_note, internal_note, is_manual, created_at
+ * current_food, current_note, internal_note, is_manual, other_food, other_price, created_at
  */
 export type ColleagueRow = {
   id: string
@@ -18,16 +18,30 @@ export type ColleagueRow = {
   current_note: string | null
   internal_note: string | null
   is_manual: boolean
+  other_food: string | null
+  other_price: number | null
   created_at?: string
 }
 
-/** upsert / insert 時不送 created_at */
-export type ColleagueUpsertPayload = Omit<ColleagueRow, 'created_at'>
+/** 早餐點餐頁 upsert 僅覆寫早餐相關欄位，不碰其他店家欄位 */
+export type ColleagueUpsertPayload = {
+  id: string
+  name: string
+  order_index: number | null
+  fixed_drink: string | null
+  requires_untoasted_toast: boolean
+  dislike_list: string[] | null
+  is_absent: boolean
+  current_food: string | null
+  current_note: string | null
+  internal_note: string | null
+  is_manual: boolean
+}
 
 /**
  * insert() 僅允許資料表實際存在的欄位（不含 created_at），避免多餘屬性導致 PostgREST 拒絕。
  * 與 colleagues：id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent,
- * current_food, current_note, internal_note, is_manual
+ * current_food, current_note, internal_note, is_manual, other_food, other_price
  */
 export type ColleagueInsertPayload = {
   id: string
@@ -41,10 +55,37 @@ export type ColleagueInsertPayload = {
   current_note: string | null
   internal_note: string | null
   is_manual: boolean
+  other_food: string | null
+  other_price: number | null
 }
 
 const COLLEAGUE_SELECT =
+  'id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent, current_food, current_note, internal_note, is_manual, other_food, other_price'
+
+const COLLEAGUE_SELECT_LEGACY =
   'id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent, current_food, current_note, internal_note, is_manual'
+
+function isMissingOtherStoreColumnsError(err: unknown): boolean {
+  if (!err || typeof err !== 'object') return false
+  const message =
+    'message' in err && typeof (err as { message?: unknown }).message === 'string'
+      ? (err as { message: string }).message.toLowerCase()
+      : ''
+  const details =
+    'details' in err && typeof (err as { details?: unknown }).details === 'string'
+      ? (err as { details: string }).details.toLowerCase()
+      : ''
+  const hint =
+    'hint' in err && typeof (err as { hint?: unknown }).hint === 'string'
+      ? (err as { hint: string }).hint.toLowerCase()
+      : ''
+  const text = `${message} ${details} ${hint}`
+  return (
+    text.includes('other_food') ||
+    text.includes('other_price') ||
+    text.includes('column') && text.includes('does not exist')
+  )
+}
 
 function normalizeDislikeList(raw: ColleagueRow['dislike_list']): string[] {
   if (raw == null) return []
@@ -71,6 +112,18 @@ export function orderFromRow(r: ColleagueRow): Order {
     selectedDrinkId: r.fixed_drink,
     selectedFoodId: r.current_food,
     foodRemark: r.current_note ?? undefined,
+  }
+}
+
+export function otherStoreEntryFromRow(r: ColleagueRow): OtherStoreEntry {
+  const normalizedFood =
+    typeof r.other_food === 'string' && r.other_food.trim() !== '0'
+      ? r.other_food
+      : ''
+  return {
+    userId: r.id,
+    otherFood: normalizedFood,
+    otherPrice: r.other_price ?? 0,
   }
 }
 
@@ -105,18 +158,42 @@ export function colleagueRowFromPersonnelAndOrder(
 export async function fetchColleaguesFromSupabase(): Promise<{
   personnel: Personnel[]
   orders: Order[]
+  otherStoreEntries: OtherStoreEntry[]
 }> {
-  const { data, error } = await supabase
+  let rows: ColleagueRow[] = []
+  const primary = await supabase
     .from('colleagues')
     .select(COLLEAGUE_SELECT)
     .order('order_index', { ascending: true, nullsFirst: false })
     .order('name', { ascending: true })
 
-  if (error) throw error
-  const rows = (data ?? []) as ColleagueRow[]
+  if (primary.error) {
+    if (!isMissingOtherStoreColumnsError(primary.error)) throw primary.error
+    console.warn(
+      'colleagues.other_food / other_price 可能尚未被 API schema cache 識別，退回舊查詢。',
+      primary.error,
+    )
+    const legacy = await supabase
+      .from('colleagues')
+      .select(COLLEAGUE_SELECT_LEGACY)
+      .order('order_index', { ascending: true, nullsFirst: false })
+      .order('name', { ascending: true })
+    if (legacy.error) throw legacy.error
+    rows = ((legacy.data ?? []) as Array<Omit<ColleagueRow, 'other_food' | 'other_price'>>).map(
+      (row) => ({
+        ...row,
+        other_food: '',
+        other_price: 0,
+      }),
+    )
+  } else {
+    rows = (primary.data ?? []) as ColleagueRow[]
+  }
+
   const personnel = rows.map(personnelFromRow)
   const orders = rows.map(orderFromRow)
-  return { personnel, orders }
+  const otherStoreEntries = rows.map(otherStoreEntryFromRow)
+  return { personnel, orders, otherStoreEntries }
 }
 
 /** 依列表新順序寫回 order_index（1-based） */
@@ -158,6 +235,8 @@ export function buildNewColleagueInsertPayload(
     current_note: null,
     internal_note: null,
     is_manual: false,
+    other_food: null,
+    other_price: null,
   }
 }
 
@@ -174,8 +253,18 @@ export async function insertColleagueRow(row: ColleagueInsertPayload): Promise<v
     current_note: row.current_note,
     internal_note: row.internal_note,
     is_manual: row.is_manual,
+    other_food: row.other_food,
+    other_price: row.other_price,
   }
   const { error } = await supabase.from('colleagues').insert(payload)
+  if (error) throw error
+}
+
+export async function updateColleagueOtherStoreFields(
+  userId: string,
+  patch: { other_food?: string | null; other_price?: number | null },
+): Promise<void> {
+  const { error } = await supabase.from('colleagues').update(patch).eq('id', userId)
   if (error) throw error
 }
 

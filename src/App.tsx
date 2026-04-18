@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { MenuCategoryDef, MenuItem } from './data/menuData'
 import { BreakfastOrderingApp } from './components/BreakfastOrderingApp'
 import { MenuManagementPanel } from './components/MenuManagementPanel'
+import { OtherStorePanel } from './components/OtherStorePanel'
 import { fetchColleaguesFromSupabase } from './lib/colleagueSupabase'
 import {
   deleteMenuItemById,
@@ -9,9 +10,18 @@ import {
   fetchMenuItems,
   insertMenuItemRow,
 } from './lib/menuSupabase'
-import type { Order, Personnel } from './domain/breakfastTypes'
+import type { Order, OtherStoreEntry, Personnel } from './domain/breakfastTypes'
 
-export type AppTab = 'order' | 'menu'
+export type AppTab = 'order' | 'other-store' | 'menu'
+
+function getErrorMessage(err: unknown): string {
+  if (err instanceof Error && err.message) return err.message
+  if (err && typeof err === 'object' && 'message' in err) {
+    const message = (err as { message?: unknown }).message
+    if (typeof message === 'string' && message.trim() !== '') return message
+  }
+  return String(err)
+}
 
 function LoadingBlock({ label }: { label: string }) {
   return (
@@ -41,6 +51,7 @@ function App() {
   const [orderTabError, setOrderTabError] = useState<string | null>(null)
   const [orderPersonnel, setOrderPersonnel] = useState<Personnel[]>([])
   const [orderOrders, setOrderOrders] = useState<Order[]>([])
+  const [otherStoreEntries, setOtherStoreEntries] = useState<OtherStoreEntry[]>([])
   const [orderDataKey, setOrderDataKey] = useState(0)
   /** 新增同事並 refetch 後，讓點餐頁選中該員 */
   const [selectPersonIdOnMount, setSelectPersonIdOnMount] = useState<
@@ -56,6 +67,7 @@ function App() {
     setMenu(m)
     setOrderPersonnel(col.personnel)
     setOrderOrders(col.orders)
+    setOtherStoreEntries(col.otherStoreEntries)
   }, [])
 
   const handleColleaguesSynced = useCallback(
@@ -81,7 +93,7 @@ function App() {
         setMenu(m)
       } catch (e) {
         if (cancelled) return
-        setMenuTabError(e instanceof Error ? e.message : String(e))
+        setMenuTabError(getErrorMessage(e))
       } finally {
         if (!cancelled) setMenuTabLoading(false)
       }
@@ -92,7 +104,7 @@ function App() {
   }, [activeTab])
 
   useEffect(() => {
-    if (activeTab !== 'order') return
+    if (activeTab !== 'order' && activeTab !== 'other-store') return
     let cancelled = false
     setOrderTabLoading(true)
     setOrderTabError(null)
@@ -103,7 +115,7 @@ function App() {
         setOrderDataKey((k) => k + 1)
       } catch (e) {
         if (cancelled) return
-        setOrderTabError(e instanceof Error ? e.message : String(e))
+        setOrderTabError(getErrorMessage(e))
       } finally {
         if (!cancelled) setOrderTabLoading(false)
       }
@@ -189,18 +201,34 @@ function App() {
             >
               菜單設定與管理
             </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={activeTab === 'other-store'}
+              id="tab-other-store"
+              onClick={() => setActiveTab('other-store')}
+              className={`min-h-[48px] min-w-[140px] rounded-xl px-5 py-3 text-sm font-bold shadow-sm transition-all sm:text-base ${
+                activeTab === 'other-store'
+                  ? 'bg-orange-500 text-white ring-2 ring-orange-600 ring-offset-2'
+                  : 'bg-white text-orange-900 hover:bg-orange-50'
+              }`}
+            >
+              其他店家
+            </button>
           </div>
 
           <p className="text-xs text-slate-600">
             {activeTab === 'order'
               ? '編輯同事、隨機抽餐與店家彙整。菜單與同事資料由 Supabase 同步。'
+              : activeTab === 'other-store'
+                ? '手動輸入其他店家的餐點與金額，列表與同事資料和主頁同步。'
               : '此頁僅顯示菜單 CRUD；變更即寫入 menu_items。'}
           </p>
         </div>
       </header>
 
       <main className="w-full">
-        {activeTab === 'order' ? (
+        {activeTab === 'order' || activeTab === 'other-store' ? (
           orderTabLoading ? (
             <LoadingBlock label="正在載入菜單與同事名單…" />
           ) : orderTabError ? (
@@ -211,15 +239,23 @@ function App() {
             </div>
           ) : (
             <div className="mx-auto w-full max-w-7xl">
-              <BreakfastOrderingApp
-                key={orderDataKey}
-                menu={menu}
-                categories={categories}
-                initialPersonnel={orderPersonnel}
-                initialOrders={orderOrders}
-                selectPersonIdOnMount={selectPersonIdOnMount}
-                onColleaguesSynced={handleColleaguesSynced}
-              />
+              {activeTab === 'order' ? (
+                <BreakfastOrderingApp
+                  key={orderDataKey}
+                  menu={menu}
+                  categories={categories}
+                  initialPersonnel={orderPersonnel}
+                  initialOrders={orderOrders}
+                  selectPersonIdOnMount={selectPersonIdOnMount}
+                  onColleaguesSynced={handleColleaguesSynced}
+                />
+              ) : (
+                <OtherStorePanel
+                  key={orderDataKey}
+                  initialPersonnel={orderPersonnel}
+                  initialEntries={otherStoreEntries}
+                />
+              )}
             </div>
           )
         ) : menuTabLoading ? (

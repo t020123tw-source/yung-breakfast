@@ -1271,7 +1271,7 @@ export function BreakfastOrderingApp({
                   </div>
                 </div>
               </div>
-              <ul className="h-auto flex-1 px-1 py-1.5 sm:px-2">
+              <ul className="h-auto flex-1 px-1 pb-0 pt-1 sm:px-2">
                 {personnel.length === 0 ? (
                   <li className="list-none px-3 py-10 text-center text-sm text-amber-800/80">
                     尚無同事列在此處；請使用本欄最下方「新增同事」加入第一位。
@@ -1457,14 +1457,14 @@ export function BreakfastOrderingApp({
                 })}
               </ul>
 
-              <div className="border-t border-amber-200/80 bg-amber-50/30 px-4 py-4 sm:px-5">
-                <h3 className="text-sm font-semibold text-amber-950">
+              <div className="m-0 w-full border-t border-amber-200/80 bg-amber-50/30 px-4 py-4 sm:px-5">
+                <h3 className="text-base font-bold text-amber-950 sm:text-lg">
                   店家點餐彙整（餐點統計明細）
                 </h3>
-                <p className="mt-3 select-all text-lg leading-relaxed text-black">
+                <p className="mt-2 select-all text-xl leading-relaxed text-black sm:text-2xl">
                   {shopSummaryLine}
                 </p>
-                <p className="mt-3 text-xs text-amber-900/55">
+                <p className="mt-2 text-sm text-amber-900/55 sm:text-base">
                   純文字一行，可直接複製；若同事有勾選「吐司類一律不烤」且點吐司，總結中會出現
                   (不烤)。
                 </p>
