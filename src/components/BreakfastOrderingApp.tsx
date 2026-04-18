@@ -1168,16 +1168,20 @@ export function BreakfastOrderingApp({
     const o = orders.find((x) => x.userId === userId)
     const p = personnel.find((x) => x.id === userId)
     if (!o || !p) {
-      return { name: '—', drinkName: '', mealLine: '' }
+      return { name: '—', drinkName: '', mealLine: '', mealSegments: [], mealRemark: '' }
     }
     if (p.isAbsent) {
-      return { name: p.name, drinkName: '', mealLine: '' }
+      return { name: p.name, drinkName: '', mealLine: '', mealSegments: [], mealRemark: '' }
     }
     const drinkName = o.selectedDrinkId
       ? menuFromMap(menuMap, o.selectedDrinkId)?.name ?? ''
       : ''
+    const mealSegments = splitCurrentFoodSegments(o.selectedFoodId).map(
+      (seg) => labelForFoodSegment(menuMap, menu, seg, p) ?? seg,
+    )
+    const mealRemark = (o.foodRemark ?? '').trim()
     const mealLine = buildFoodLineForShop(menuMap, menu, o, p) ?? ''
-    return { name: p.name, drinkName, mealLine }
+    return { name: p.name, drinkName, mealLine, mealSegments, mealRemark }
   }
 
   const todayMealSummaryLine = useMemo(() => {
@@ -1299,13 +1303,13 @@ export function BreakfastOrderingApp({
                       onDrop={(e) => handleColleagueDrop(e, p.id)}
                     >
                       <div
-                        className={`grid grid-cols-12 gap-1 py-1.5 pl-0.5 pr-0.5 transition sm:gap-1.5 sm:pl-1.5 sm:pr-1.5 ${
+                        className={`grid grid-cols-12 gap-0.5 py-1 pl-0.5 pr-0.5 transition sm:gap-1 sm:pl-1 sm:pr-1 ${
                           active
                             ? 'bg-amber-100/90 ring-1 ring-inset ring-amber-300/80'
                             : 'hover:bg-amber-50/80'
                         }`}
                       >
-                        <div className="col-span-2 flex min-h-[2.6rem] min-w-0 gap-0.5 sm:gap-1">
+                        <div className="col-span-2 flex min-h-[2.2rem] min-w-0 gap-0.5">
                           <button
                             type="button"
                             draggable
@@ -1333,7 +1337,7 @@ export function BreakfastOrderingApp({
                               e.preventDefault()
                               cancelScheduledSelectAndToggleAbsent(p.id)
                             }}
-                            className="flex min-h-[2.6rem] min-w-0 max-w-[6.25rem] flex-1 cursor-pointer flex-col items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-1.5 text-center text-sm font-semibold leading-tight text-slate-900 shadow-sm hover:bg-slate-200/70 sm:max-w-[7rem] sm:text-base"
+                            className="flex min-h-[2.2rem] min-w-0 max-w-[6rem] flex-1 cursor-pointer flex-col items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-0.5 text-center text-xs font-semibold leading-tight text-slate-900 shadow-sm hover:bg-slate-200/70 sm:max-w-[6.5rem] sm:text-sm"
                           >
                             <span className="line-clamp-2 w-full break-words text-center leading-tight">
                               {p.name}
@@ -1341,7 +1345,7 @@ export function BreakfastOrderingApp({
                           </button>
                         </div>
 
-                        <div className="col-span-3 flex min-h-[2.6rem] min-w-0 items-stretch rounded-lg border border-slate-200/90 bg-slate-100 px-1.5 py-1 shadow-sm">
+                        <div className="col-span-2 flex min-h-[2.2rem] min-w-0 items-stretch rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-0.5 shadow-sm">
                           {p.isAbsent ? (
                             <div className="flex min-w-0 flex-1 items-center justify-center text-center">
                               <AbsentSlotIcon />
@@ -1351,7 +1355,7 @@ export function BreakfastOrderingApp({
                               type="button"
                               title={row.drinkName || undefined}
                               onClick={() => scheduleSelectPerson(p.id)}
-                              className="flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded-md py-0.5 text-center text-sm font-medium leading-tight text-slate-900 hover:bg-slate-200/60 sm:text-base"
+                              className="flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded-md py-0 text-center text-xs font-medium leading-tight text-slate-900 hover:bg-slate-200/60 sm:text-sm"
                             >
                               <span className="line-clamp-2 block min-w-0 max-w-full break-words text-center leading-tight">
                                 {row.drinkName}
@@ -1360,19 +1364,32 @@ export function BreakfastOrderingApp({
                           )}
                         </div>
 
-                        <div className="col-span-4 flex min-h-[3rem] min-w-0 items-stretch gap-0.5 sm:min-h-[3.1rem]">
+                        <div className="col-span-6 flex min-h-[2.2rem] min-w-0 items-stretch gap-0.5">
                           {p.isAbsent ? (
-                            <div className="flex min-h-[3rem] min-w-0 flex-1 items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100 px-1.5 py-1.5 text-center shadow-sm sm:min-h-[3.1rem]">
+                            <div className="flex min-h-[2.2rem] min-w-0 flex-1 items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-0.5 text-center shadow-sm">
                               <AbsentSlotIcon />
                             </div>
                           ) : (
                             <button
                               type="button"
                               onClick={() => scheduleSelectPerson(p.id)}
-                              className="flex min-h-[3rem] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-lg border border-slate-200/90 bg-slate-100 px-1.5 py-1.5 text-center text-sm font-medium leading-tight text-slate-900 shadow-sm hover:bg-slate-200/70 sm:min-h-[3.1rem] sm:text-base"
+                              className="flex min-h-[2.2rem] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-0.5 text-center text-xs font-medium leading-tight text-slate-900 shadow-sm hover:bg-slate-200/70 sm:text-sm"
+                              title={row.mealLine || undefined}
                             >
-                              <span className="line-clamp-3 block min-w-0 max-w-full break-words text-center leading-tight">
-                                {row.mealLine}
+                              <span className="flex min-w-0 flex-1 flex-row flex-nowrap items-center justify-center gap-1 overflow-hidden whitespace-nowrap text-center leading-tight">
+                                {row.mealSegments.map((segment, idx) => (
+                                  <span
+                                    key={`${p.id}-meal-${idx}`}
+                                    className="min-w-0 shrink truncate rounded bg-slate-200/80 px-1 py-0.5"
+                                  >
+                                    {segment}
+                                  </span>
+                                ))}
+                                {row.mealRemark ? (
+                                  <span className="shrink-0 truncate text-[10px] text-slate-500">
+                                    （{row.mealRemark}）
+                                  </span>
+                                ) : null}
                               </span>
                             </button>
                           )}
@@ -1383,7 +1400,7 @@ export function BreakfastOrderingApp({
                                 e.stopPropagation()
                                 clearPersonMeal(p.id)
                               }}
-                              className="flex h-6 w-6 shrink-0 items-center justify-center self-center rounded-md border border-slate-300/80 bg-white text-xs font-bold leading-none text-slate-500 hover:bg-rose-50 hover:text-rose-700"
+                              className="flex h-5 w-5 shrink-0 items-center justify-center self-center rounded-md border border-slate-300/80 bg-white text-[10px] font-bold leading-none text-slate-500 hover:bg-rose-50 hover:text-rose-700"
                               title="清除餐點"
                               aria-label="清除餐點"
                             >
@@ -1393,7 +1410,7 @@ export function BreakfastOrderingApp({
                         </div>
 
                         <div
-                          className={`col-span-3 flex min-h-[2.6rem] min-w-0 max-w-[5.25rem] items-stretch justify-center self-stretch rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-1.5 text-center shadow-sm sm:max-w-[5.5rem] transition-[transform,box-shadow] duration-300 ease-out will-change-transform ${
+                          className={`col-span-2 flex min-h-[2.2rem] min-w-0 max-w-[4.5rem] items-stretch justify-center self-stretch rounded-lg border border-slate-200/90 bg-slate-100 px-0.5 py-0.5 text-center shadow-sm sm:max-w-[4.75rem] transition-[transform,box-shadow] duration-300 ease-out will-change-transform ${
                             !p.isAbsent && eggAmountFlashUserId === p.id
                               ? 'z-[1] scale-[1.05] shadow-md ring-2 ring-amber-400 ring-offset-1 ring-offset-amber-50/90'
                               : ''
@@ -1416,11 +1433,11 @@ export function BreakfastOrderingApp({
                               onClick={() => scheduleSelectPerson(p.id)}
                               className="flex w-full min-w-0 flex-col items-center justify-center gap-0.5 text-slate-900"
                             >
-                              <span className="text-[9px] font-medium uppercase tracking-wide text-slate-500">
+                              <span className="text-[8px] font-medium uppercase tracking-wide text-slate-500">
                                 金額
                               </span>
                               <span
-                                className={`text-sm font-bold tabular-nums leading-none sm:text-base ${
+                                className={`text-xs font-bold tabular-nums leading-none sm:text-sm ${
                                   hasUnpriced ? 'text-amber-800' : 'text-slate-900'
                                 }`}
                               >
