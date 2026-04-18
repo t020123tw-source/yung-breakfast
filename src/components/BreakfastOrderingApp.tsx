@@ -1204,7 +1204,7 @@ export function BreakfastOrderingApp({
   return (
     <>
     <div className="w-full text-slate-900">
-      <div className="flex w-full flex-col px-4 py-5 sm:px-6 lg:px-10 lg:py-7">
+      <div className="flex w-full flex-col px-4 py-4 sm:px-6 lg:px-8 lg:py-5">
         {/* 截圖專區 2/3 · 操作專區 1/3 */}
         <div className="grid grid-cols-1 items-stretch gap-4 lg:grid-cols-3 lg:gap-5">
           {/* 左 2/3：截圖專區（同事列表 → 店家彙整 → 新增同事） */}
@@ -1267,7 +1267,7 @@ export function BreakfastOrderingApp({
                   </div>
                 </div>
               </div>
-              <ul className="h-auto flex-1 px-1 py-2 sm:px-3">
+              <ul className="h-auto flex-1 px-1 py-1.5 sm:px-2">
                 {personnel.length === 0 ? (
                   <li className="list-none px-3 py-10 text-center text-sm text-amber-800/80">
                     尚無同事列在此處；請使用本欄最下方「新增同事」加入第一位。
@@ -1299,13 +1299,13 @@ export function BreakfastOrderingApp({
                       onDrop={(e) => handleColleagueDrop(e, p.id)}
                     >
                       <div
-                        className={`grid grid-cols-12 gap-1.5 py-2.5 pl-1 pr-1 transition sm:gap-2 sm:pl-2 sm:pr-2 ${
+                        className={`grid grid-cols-12 gap-1 py-1.5 pl-0.5 pr-0.5 transition sm:gap-1.5 sm:pl-1.5 sm:pr-1.5 ${
                           active
                             ? 'bg-amber-100/90 ring-1 ring-inset ring-amber-300/80'
                             : 'hover:bg-amber-50/80'
                         }`}
                       >
-                        <div className="col-span-2 flex min-h-[3.25rem] min-w-0 gap-1 sm:gap-1.5">
+                        <div className="col-span-2 flex min-h-[2.6rem] min-w-0 gap-0.5 sm:gap-1">
                           <button
                             type="button"
                             draggable
@@ -1321,7 +1321,7 @@ export function BreakfastOrderingApp({
                             onClick={(e) => e.stopPropagation()}
                             title="拖曳排序"
                             aria-label={`拖曳以調整 ${p.name} 的順序`}
-                            className="flex w-7 shrink-0 cursor-grab touch-none flex-col items-center justify-center rounded-lg border border-transparent bg-transparent text-slate-400 hover:bg-slate-200/50 hover:text-slate-600 active:cursor-grabbing"
+                            className="flex w-6 shrink-0 cursor-grab touch-none flex-col items-center justify-center rounded-md border border-transparent bg-transparent text-slate-400 hover:bg-slate-200/50 hover:text-slate-600 active:cursor-grabbing"
                           >
                             <ColleagueDragHandleIcon />
                           </button>
@@ -1333,15 +1333,15 @@ export function BreakfastOrderingApp({
                               e.preventDefault()
                               cancelScheduledSelectAndToggleAbsent(p.id)
                             }}
-                            className="flex min-h-[3.25rem] min-w-0 max-w-[6.5rem] flex-1 cursor-pointer flex-col items-center justify-center rounded-xl border border-slate-200/90 bg-slate-100 px-1.5 py-2 text-center text-base font-semibold leading-snug text-slate-900 shadow-sm hover:bg-slate-200/70 sm:max-w-[7.25rem] sm:text-lg"
+                            className="flex min-h-[2.6rem] min-w-0 max-w-[6.25rem] flex-1 cursor-pointer flex-col items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-1.5 text-center text-sm font-semibold leading-tight text-slate-900 shadow-sm hover:bg-slate-200/70 sm:max-w-[7rem] sm:text-base"
                           >
-                            <span className="line-clamp-3 w-full break-words text-center">
+                            <span className="line-clamp-2 w-full break-words text-center leading-tight">
                               {p.name}
                             </span>
                           </button>
                         </div>
 
-                        <div className="col-span-3 flex min-h-[3.25rem] min-w-0 items-stretch rounded-xl border border-slate-200/90 bg-slate-100 px-2 py-1.5 shadow-sm">
+                        <div className="col-span-3 flex min-h-[2.6rem] min-w-0 items-stretch rounded-lg border border-slate-200/90 bg-slate-100 px-1.5 py-1 shadow-sm">
                           {p.isAbsent ? (
                             <div className="flex min-w-0 flex-1 items-center justify-center text-center">
                               <AbsentSlotIcon />
@@ -1351,27 +1351,27 @@ export function BreakfastOrderingApp({
                               type="button"
                               title={row.drinkName || undefined}
                               onClick={() => scheduleSelectPerson(p.id)}
-                              className="flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded-lg py-1 text-center text-lg font-medium leading-snug text-slate-900 hover:bg-slate-200/60 sm:text-xl"
+                              className="flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded-md py-0.5 text-center text-sm font-medium leading-tight text-slate-900 hover:bg-slate-200/60 sm:text-base"
                             >
-                              <span className="block min-w-0 max-w-full break-words text-center">
+                              <span className="line-clamp-2 block min-w-0 max-w-full break-words text-center leading-tight">
                                 {row.drinkName}
                               </span>
                             </button>
                           )}
                         </div>
 
-                        <div className="col-span-4 flex min-h-[4rem] min-w-0 items-stretch gap-1 sm:min-h-[4.25rem]">
+                        <div className="col-span-4 flex min-h-[3rem] min-w-0 items-stretch gap-0.5 sm:min-h-[3.1rem]">
                           {p.isAbsent ? (
-                            <div className="flex min-h-[4rem] min-w-0 flex-1 items-center justify-center rounded-xl border border-slate-200/90 bg-slate-100 px-2 py-2 text-center shadow-sm sm:min-h-[4.25rem]">
+                            <div className="flex min-h-[3rem] min-w-0 flex-1 items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100 px-1.5 py-1.5 text-center shadow-sm sm:min-h-[3.1rem]">
                               <AbsentSlotIcon />
                             </div>
                           ) : (
                             <button
                               type="button"
                               onClick={() => scheduleSelectPerson(p.id)}
-                              className="flex min-h-[4rem] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-slate-200/90 bg-slate-100 px-2.5 py-3 text-center text-base font-medium leading-snug text-slate-900 shadow-sm hover:bg-slate-200/70 sm:min-h-[4.25rem] sm:text-lg"
+                              className="flex min-h-[3rem] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-lg border border-slate-200/90 bg-slate-100 px-1.5 py-1.5 text-center text-sm font-medium leading-tight text-slate-900 shadow-sm hover:bg-slate-200/70 sm:min-h-[3.1rem] sm:text-base"
                             >
-                              <span className="line-clamp-4 block min-h-[2.75rem] min-w-0 max-w-full break-words text-center sm:line-clamp-5">
+                              <span className="line-clamp-3 block min-w-0 max-w-full break-words text-center leading-tight">
                                 {row.mealLine}
                               </span>
                             </button>
@@ -1383,7 +1383,7 @@ export function BreakfastOrderingApp({
                                 e.stopPropagation()
                                 clearPersonMeal(p.id)
                               }}
-                              className="flex h-8 w-8 shrink-0 items-center justify-center self-center rounded-md border border-slate-300/80 bg-white text-sm font-bold text-slate-500 hover:bg-rose-50 hover:text-rose-700"
+                              className="flex h-6 w-6 shrink-0 items-center justify-center self-center rounded-md border border-slate-300/80 bg-white text-xs font-bold leading-none text-slate-500 hover:bg-rose-50 hover:text-rose-700"
                               title="清除餐點"
                               aria-label="清除餐點"
                             >
@@ -1393,7 +1393,7 @@ export function BreakfastOrderingApp({
                         </div>
 
                         <div
-                          className={`col-span-3 flex min-h-[3.25rem] min-w-0 max-w-[5.5rem] items-stretch justify-center self-stretch rounded-xl border border-slate-200/90 bg-slate-100 px-1.5 py-2 text-center shadow-sm sm:max-w-[6rem] transition-[transform,box-shadow] duration-300 ease-out will-change-transform ${
+                          className={`col-span-3 flex min-h-[2.6rem] min-w-0 max-w-[5.25rem] items-stretch justify-center self-stretch rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-1.5 text-center shadow-sm sm:max-w-[5.5rem] transition-[transform,box-shadow] duration-300 ease-out will-change-transform ${
                             !p.isAbsent && eggAmountFlashUserId === p.id
                               ? 'z-[1] scale-[1.05] shadow-md ring-2 ring-amber-400 ring-offset-1 ring-offset-amber-50/90'
                               : ''
@@ -1416,11 +1416,11 @@ export function BreakfastOrderingApp({
                               onClick={() => scheduleSelectPerson(p.id)}
                               className="flex w-full min-w-0 flex-col items-center justify-center gap-0.5 text-slate-900"
                             >
-                              <span className="text-[10px] font-medium uppercase tracking-wide text-slate-500">
+                              <span className="text-[9px] font-medium uppercase tracking-wide text-slate-500">
                                 金額
                               </span>
                               <span
-                                className={`text-lg font-bold tabular-nums leading-none sm:text-xl ${
+                                className={`text-sm font-bold tabular-nums leading-none sm:text-base ${
                                   hasUnpriced ? 'text-amber-800' : 'text-slate-900'
                                 }`}
                               >

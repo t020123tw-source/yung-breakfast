@@ -148,8 +148,8 @@ function App() {
 
   return (
     <div className="min-h-dvh w-full bg-gradient-to-br from-amber-50 via-orange-50/40 to-emerald-50/30 text-slate-900">
-      <header className="sticky top-0 z-[100] border-b-2 border-amber-300/90 bg-white/95 shadow-md backdrop-blur-md">
-        <div className="mx-auto flex w-full max-w-[1600px] flex-col gap-3 px-4 py-4 sm:px-6 lg:px-10">
+      <header className="border-b border-amber-300/90 bg-white/95 shadow-sm">
+        <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 px-4 py-4 sm:px-6 lg:px-8">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h1 className="text-xl font-bold tracking-tight text-amber-950 sm:text-2xl">
               早餐點餐系統
@@ -204,34 +204,36 @@ function App() {
           orderTabLoading ? (
             <LoadingBlock label="正在載入菜單與同事名單…" />
           ) : orderTabError ? (
-            <div className="px-4 py-10 sm:px-6 lg:px-10">
+            <div className="mx-auto w-full max-w-7xl px-4 py-10 sm:px-6 lg:px-8">
               <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
                 載入失敗：{orderTabError}
               </div>
             </div>
           ) : (
-            <BreakfastOrderingApp
-              key={orderDataKey}
-              menu={menu}
-              categories={categories}
-              initialPersonnel={orderPersonnel}
-              initialOrders={orderOrders}
-              selectPersonIdOnMount={selectPersonIdOnMount}
-              onColleaguesSynced={handleColleaguesSynced}
-            />
+            <div className="mx-auto w-full max-w-7xl">
+              <BreakfastOrderingApp
+                key={orderDataKey}
+                menu={menu}
+                categories={categories}
+                initialPersonnel={orderPersonnel}
+                initialOrders={orderOrders}
+                selectPersonIdOnMount={selectPersonIdOnMount}
+                onColleaguesSynced={handleColleaguesSynced}
+              />
+            </div>
           )
         ) : menuTabLoading ? (
-          <div className="border-t border-emerald-100/80 bg-emerald-50/20 px-4 py-6 sm:px-6 lg:px-10">
+          <div className="border-t border-emerald-100/80 bg-emerald-50/20 px-4 py-6 sm:px-6 lg:px-8">
             <LoadingBlock label="正在載入菜單…" />
           </div>
         ) : menuTabError ? (
-          <div className="border-t border-emerald-100/80 bg-emerald-50/20 px-4 py-6 sm:px-6 lg:px-10">
-            <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
+          <div className="border-t border-emerald-100/80 bg-emerald-50/20 px-4 py-6 sm:px-6 lg:px-8">
+            <div className="mx-auto w-full max-w-7xl rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-900">
               載入失敗：{menuTabError}
             </div>
           </div>
         ) : (
-          <div className="border-t border-emerald-100/80 bg-emerald-50/20 px-4 py-6 sm:px-6 lg:px-10">
+          <div className="border-t border-emerald-100/80 bg-emerald-50/20 px-4 py-6 sm:px-6 lg:px-8">
             <MenuManagementPanel
               menu={menu}
               onAddItem={onAddMenuItem}
