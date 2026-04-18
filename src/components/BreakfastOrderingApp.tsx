@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type DragEvent,
 } from 'react'
 import {
   type MenuCategoryDef,
@@ -21,6 +22,7 @@ import {
   colleagueRowFromPersonnelAndOrder,
   deleteColleagueById,
   insertColleagueRow,
+  updateColleagueOrderIndices,
   upsertColleagueRows,
 } from '../lib/colleagueSupabase'
 import { DislikeSettingsModal } from './DislikeSettingsModal'
@@ -154,6 +156,32 @@ function AbsentSlotIcon() {
       >
         <path d="M7 7l10 10M17 7L7 17" />
       </svg>
+    </span>
+  )
+}
+
+/** HTML5 拖曳：將 source 列插入至 target 列位置，並重編 orderIndex 為 1…n */
+function reorderPersonnelByInsert(
+  list: Personnel[],
+  sourceId: string,
+  targetId: string,
+): Personnel[] {
+  const fromIdx = list.findIndex((p) => p.id === sourceId)
+  const toIdx = list.findIndex((p) => p.id === targetId)
+  if (fromIdx < 0 || toIdx < 0 || fromIdx === toIdx) return list
+  const next = [...list]
+  const [item] = next.splice(fromIdx, 1)
+  next.splice(toIdx, 0, item)
+  return next.map((p, i) => ({ ...p, orderIndex: i + 1 }))
+}
+
+/** 低調拖曳把手：六點陣 */
+function ColleagueDragHandleIcon() {
+  return (
+    <span className="inline-grid shrink-0 grid-cols-2 gap-0.5" aria-hidden>
+      {Array.from({ length: 6 }).map((_, i) => (
+        <span key={i} className="size-[3px] rounded-full bg-slate-400/90" />
+      ))}
     </span>
   )
 }
@@ -309,6 +337,12 @@ export function BreakfastOrderingApp({
     null,
   )
   const eggFlashTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  /** 同事列表拖曳排序（HTML5 DnD） */
+  const [colleagueDragId, setColleagueDragId] = useState<string | null>(null)
+  const [colleagueDragOverId, setColleagueDragOverId] = useState<string | null>(
+    null,
+  )
 
   useEffect(() => {
     return () => {
@@ -584,8 +618,15 @@ export function BreakfastOrderingApp({
       return
     }
     setPersonnel((prev) => {
-      const next = prev.filter((p) => p.id !== id)
+      const next = prev
+        .filter((p) => p.id !== id)
+        .map((p, i) => ({ ...p, orderIndex: i + 1 }))
       setSelectedPersonId(next[0]?.id ?? '')
+      queueMicrotask(() => {
+        void updateColleagueOrderIndices(next.map((p) => p.id)).catch((err) => {
+          console.error(err)
+        })
+      })
       return next
     })
     setOrders((prev) => prev.filter((o) => o.userId !== id))
@@ -849,6 +890,35 @@ export function BreakfastOrderingApp({
     [togglePersonAbsentByDoubleClick],
   )
 
+  const handleColleagueRowDragOver = useCallback(
+    (e: DragEvent<HTMLLIElement>) => {
+      e.preventDefault()
+      e.dataTransfer.dropEffect = 'move'
+    },
+    [],
+  )
+
+  const handleColleagueDrop = useCallback(
+    (e: DragEvent<HTMLLIElement>, targetId: string) => {
+      e.preventDefault()
+      setColleagueDragOverId(null)
+      const sourceId = e.dataTransfer.getData('text/plain')
+      if (!sourceId || sourceId === targetId) return
+      setPersonnel((prev) => {
+        const next = reorderPersonnelByInsert(prev, sourceId, targetId)
+        queueMicrotask(() => {
+          void updateColleagueOrderIndices(next.map((p) => p.id)).catch(
+            (err) => {
+              console.error(err)
+            },
+          )
+        })
+        return next
+      })
+    },
+    [],
+  )
+
   /**
    * 新增同事：寫入 Supabase（欄位與 colleagues 表一致），成功後由父層 refetch 帶回最新名單。
    */
@@ -858,7 +928,9 @@ export function BreakfastOrderingApp({
     const displayName = nameTrim.length > 0 ? nameTrim : '新同事'
     /** 與 Supabase uuid 欄位相容（勿使用非 UUID 字串） */
     const id = crypto.randomUUID()
-    const row = buildNewColleagueInsertPayload(id, displayName)
+    const maxOrder = personnel.reduce((m, p) => Math.max(m, p.orderIndex), 0)
+    const nextOrderIndex = maxOrder + 1
+    const row = buildNewColleagueInsertPayload(id, displayName, nextOrderIndex)
     setAddColleagueError(null)
     setAddColleagueBusy(true)
     try {
@@ -869,6 +941,7 @@ export function BreakfastOrderingApp({
       } else {
         const p: Personnel = {
           id,
+          orderIndex: nextOrderIndex,
           name: displayName,
           fixedDrinkId: null,
           dislikedFoodIds: [],
@@ -897,7 +970,7 @@ export function BreakfastOrderingApp({
     } finally {
       setAddColleagueBusy(false)
     }
-  }, [addColleagueBusy, newColleagueName, onColleaguesSynced])
+  }, [addColleagueBusy, newColleagueName, onColleaguesSynced, personnel])
 
   const shopSummaryLine = useMemo(
     () => buildShopSummaryLine(menuMap, orders, personnel),
@@ -1054,7 +1127,24 @@ export function BreakfastOrderingApp({
                   const { total: lineTotal, hasUnpriced } =
                     computeColleagueOrderTotal(p, orderRow, menu)
                   return (
-                    <li key={p.id} className="border-b border-amber-100/80 last:border-b-0">
+                    <li
+                      key={p.id}
+                      className={`border-b border-amber-100/80 last:border-b-0 ${
+                        colleagueDragOverId === p.id &&
+                        colleagueDragId &&
+                        colleagueDragId !== p.id
+                          ? 'bg-amber-50/95 ring-1 ring-inset ring-amber-400/50'
+                          : ''
+                      } ${colleagueDragId === p.id ? 'opacity-60' : ''}`}
+                      onDragOver={handleColleagueRowDragOver}
+                      onDragEnter={() => setColleagueDragOverId(p.id)}
+                      onDragLeave={(e) => {
+                        const rel = e.relatedTarget as Node | null
+                        if (e.currentTarget.contains(rel)) return
+                        setColleagueDragOverId(null)
+                      }}
+                      onDrop={(e) => handleColleagueDrop(e, p.id)}
+                    >
                       <div
                         className={`grid grid-cols-12 gap-1.5 py-2.5 pl-1 pr-1 transition sm:gap-2 sm:pl-2 sm:pr-2 ${
                           active
@@ -1062,20 +1152,41 @@ export function BreakfastOrderingApp({
                             : 'hover:bg-amber-50/80'
                         }`}
                       >
-                        <button
-                          type="button"
-                          title={`${p.name}（雙擊切換休假）`}
-                          onClick={() => scheduleSelectPerson(p.id)}
-                          onDoubleClick={(e) => {
-                            e.preventDefault()
-                            cancelScheduledSelectAndToggleAbsent(p.id)
-                          }}
-                          className="col-span-2 flex min-h-[3.25rem] min-w-0 max-w-[6.5rem] cursor-pointer flex-col items-center justify-center rounded-xl border border-slate-200/90 bg-slate-100 px-1.5 py-2 text-center text-base font-semibold leading-snug text-slate-900 shadow-sm hover:bg-slate-200/70 sm:max-w-[7.25rem] sm:text-lg"
-                        >
-                          <span className="line-clamp-3 w-full break-words text-center">
-                            {p.name}
-                          </span>
-                        </button>
+                        <div className="col-span-2 flex min-h-[3.25rem] min-w-0 gap-1 sm:gap-1.5">
+                          <button
+                            type="button"
+                            draggable
+                            onDragStart={(e) => {
+                              e.dataTransfer.setData('text/plain', p.id)
+                              e.dataTransfer.effectAllowed = 'move'
+                              setColleagueDragId(p.id)
+                            }}
+                            onDragEnd={() => {
+                              setColleagueDragId(null)
+                              setColleagueDragOverId(null)
+                            }}
+                            onClick={(e) => e.stopPropagation()}
+                            title="拖曳排序"
+                            aria-label={`拖曳以調整 ${p.name} 的順序`}
+                            className="flex w-7 shrink-0 cursor-grab touch-none flex-col items-center justify-center rounded-lg border border-transparent bg-transparent text-slate-400 hover:bg-slate-200/50 hover:text-slate-600 active:cursor-grabbing"
+                          >
+                            <ColleagueDragHandleIcon />
+                          </button>
+                          <button
+                            type="button"
+                            title={`${p.name}（雙擊切換休假）`}
+                            onClick={() => scheduleSelectPerson(p.id)}
+                            onDoubleClick={(e) => {
+                              e.preventDefault()
+                              cancelScheduledSelectAndToggleAbsent(p.id)
+                            }}
+                            className="flex min-h-[3.25rem] min-w-0 max-w-[6.5rem] flex-1 cursor-pointer flex-col items-center justify-center rounded-xl border border-slate-200/90 bg-slate-100 px-1.5 py-2 text-center text-base font-semibold leading-snug text-slate-900 shadow-sm hover:bg-slate-200/70 sm:max-w-[7.25rem] sm:text-lg"
+                          >
+                            <span className="line-clamp-3 w-full break-words text-center">
+                              {p.name}
+                            </span>
+                          </button>
+                        </div>
 
                         <div className="col-span-3 flex min-h-[3.25rem] min-w-0 items-stretch rounded-xl border border-slate-200/90 bg-slate-100 px-2 py-1.5 shadow-sm">
                           {p.isAbsent ? (

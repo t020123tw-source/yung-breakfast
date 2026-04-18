@@ -3,12 +3,13 @@ import { supabase } from './supabaseClient'
 
 /**
  * 與 Supabase public.colleagues 實際欄位一致：
- * id, name, fixed_drink, requires_untoasted_toast, dislike_list, is_absent,
+ * id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent,
  * current_food, current_note, internal_note, is_manual, created_at
  */
 export type ColleagueRow = {
   id: string
   name: string
+  order_index: number | null
   fixed_drink: string | null
   requires_untoasted_toast: boolean
   dislike_list: string[] | null
@@ -25,12 +26,13 @@ export type ColleagueUpsertPayload = Omit<ColleagueRow, 'created_at'>
 
 /**
  * insert() 僅允許資料表實際存在的欄位（不含 created_at），避免多餘屬性導致 PostgREST 拒絕。
- * 與 colleagues：id, name, fixed_drink, requires_untoasted_toast, dislike_list, is_absent,
+ * 與 colleagues：id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent,
  * current_food, current_note, internal_note, is_manual
  */
 export type ColleagueInsertPayload = {
   id: string
   name: string
+  order_index: number
   fixed_drink: string | null
   requires_untoasted_toast: boolean
   dislike_list: string[]
@@ -42,7 +44,7 @@ export type ColleagueInsertPayload = {
 }
 
 const COLLEAGUE_SELECT =
-  'id, name, fixed_drink, requires_untoasted_toast, dislike_list, is_absent, current_food, current_note, internal_note, is_manual'
+  'id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent, current_food, current_note, internal_note, is_manual'
 
 function normalizeDislikeList(raw: ColleagueRow['dislike_list']): string[] {
   if (raw == null) return []
@@ -53,6 +55,7 @@ function normalizeDislikeList(raw: ColleagueRow['dislike_list']): string[] {
 export function personnelFromRow(r: ColleagueRow): Personnel {
   return {
     id: r.id,
+    orderIndex: r.order_index ?? 0,
     name: r.name,
     fixedDrinkId: r.fixed_drink,
     dislikedFoodIds: normalizeDislikeList(r.dislike_list),
@@ -89,6 +92,7 @@ export function colleagueRowFromPersonnelAndOrder(
   return {
     id: p.id,
     name: p.name,
+    order_index: p.orderIndex,
     fixed_drink: p.fixedDrinkId ?? null,
     requires_untoasted_toast: p.requiresUntoastedToast ?? false,
     dislike_list: [...p.dislikedFoodIds],
@@ -107,6 +111,7 @@ export async function fetchColleaguesFromSupabase(): Promise<{
   const { data, error } = await supabase
     .from('colleagues')
     .select(COLLEAGUE_SELECT)
+    .order('order_index', { ascending: true, nullsFirst: false })
     .order('name', { ascending: true })
 
   if (error) throw error
@@ -114,6 +119,19 @@ export async function fetchColleaguesFromSupabase(): Promise<{
   const personnel = rows.map(personnelFromRow)
   const orders = rows.map(orderFromRow)
   return { personnel, orders }
+}
+
+/** 依列表新順序寫回 order_index（1-based） */
+export async function updateColleagueOrderIndices(orderedIds: string[]): Promise<void> {
+  if (orderedIds.length === 0) return
+  for (let i = 0; i < orderedIds.length; i++) {
+    const id = orderedIds[i]
+    const { error } = await supabase
+      .from('colleagues')
+      .update({ order_index: i + 1 })
+      .eq('id', id)
+    if (error) throw error
+  }
 }
 
 export async function upsertColleagueRows(rows: ColleagueUpsertPayload[]): Promise<void> {
@@ -128,10 +146,12 @@ export async function upsertColleagueRows(rows: ColleagueUpsertPayload[]): Promi
 export function buildNewColleagueInsertPayload(
   id: string,
   name: string,
+  orderIndex: number,
 ): ColleagueInsertPayload {
   return {
     id,
     name,
+    order_index: orderIndex,
     fixed_drink: null,
     requires_untoasted_toast: false,
     dislike_list: [],
@@ -147,6 +167,7 @@ export async function insertColleagueRow(row: ColleagueInsertPayload): Promise<v
   const payload: ColleagueInsertPayload = {
     id: row.id,
     name: row.name,
+    order_index: row.order_index,
     fixed_drink: row.fixed_drink,
     requires_untoasted_toast: row.requires_untoasted_toast,
     dislike_list: row.dislike_list,

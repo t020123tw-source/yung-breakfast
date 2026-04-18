@@ -1,6 +1,8 @@
 /** 同事（不含個人預算；固定飲料可為 null＝無飲料） */
 export type Personnel = {
   id: string
+  /** 與 colleagues.order_index 對應；列表顯示順序（1, 2, 3…） */
+  orderIndex: number
   name: string
   fixedDrinkId: string | null
   dislikedFoodIds: string[]
