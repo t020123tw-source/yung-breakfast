@@ -440,9 +440,12 @@ export function BreakfastOrderingApp({
 
   const persistIdsRef = useRef(new Set<string>())
   const [persistTick, setPersistTick] = useState(0)
+  const [persistingCount, setPersistingCount] = useState(0)
+  const [hasPendingPersist, setHasPendingPersist] = useState(false)
 
   const schedulePersist = useCallback((userId: string) => {
     persistIdsRef.current.add(userId)
+    setHasPendingPersist(true)
     setPersistTick((n) => n + 1)
   }, [])
 
@@ -454,6 +457,7 @@ export function BreakfastOrderingApp({
       if (persistDebounceTimerRef.current) {
         clearTimeout(persistDebounceTimerRef.current)
       }
+      setHasPendingPersist(true)
       persistDebounceTimerRef.current = setTimeout(() => {
         persistDebounceTimerRef.current = null
         schedulePersist(userId)
@@ -470,6 +474,16 @@ export function BreakfastOrderingApp({
     }
   }, [])
 
+  const persistRowsNow = useCallback(async (rows: ReturnType<typeof colleagueRowFromPersonnelAndOrder>[]) => {
+    if (rows.length === 0) return
+    setPersistingCount((n) => n + 1)
+    try {
+      await upsertColleagueRows(rows)
+    } finally {
+      setPersistingCount((n) => Math.max(0, n - 1))
+    }
+  }, [])
+
   useEffect(() => {
     if (typeof window === 'undefined') return
     window.localStorage.setItem('budget', budgetInput)
@@ -478,8 +492,12 @@ export function BreakfastOrderingApp({
   useEffect(() => {
     const ids = [...persistIdsRef.current]
     persistIdsRef.current.clear()
-    if (ids.length === 0) return
+    if (ids.length === 0) {
+      setHasPendingPersist(persistDebounceTimerRef.current != null)
+      return
+    }
     void (async () => {
+      setPersistingCount((n) => n + 1)
       try {
         const rows = ids
           .map((id) => {
@@ -491,9 +509,26 @@ export function BreakfastOrderingApp({
         await upsertColleagueRows(rows)
       } catch (e) {
         console.error(e)
+      } finally {
+        setPersistingCount((n) => Math.max(0, n - 1))
+        setHasPendingPersist(
+          persistIdsRef.current.size > 0 || persistDebounceTimerRef.current != null,
+        )
       }
     })()
   }, [personnel, orders, persistTick])
+
+  const isPersisting = hasPendingPersist || persistingCount > 0
+
+  useEffect(() => {
+    if (!isPersisting) return
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault()
+      e.returnValue = ''
+    }
+    window.addEventListener('beforeunload', handleBeforeUnload)
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload)
+  }, [isPersisting])
 
   /** 今日餐點多欄草稿（儲存時拼接為 current_food） */
   const [mealLineDrafts, setMealLineDrafts] = useState<string[]>([''])
@@ -957,7 +992,7 @@ export function BreakfastOrderingApp({
   /**
    * 清空所有人非指定套用的餐點，並將全員恢復為出勤（取消休假）。
    */
-  const clearAllWheelFoodsGlobally = useCallback(() => {
+  const clearAllWheelFoodsGlobally = useCallback(async () => {
     const nextP = personnel.map((p) => ({ ...p, isAbsent: false }))
     const nextSlotCounts = Object.fromEntries(
       nextP.map((p) => [p.id, Math.max(1, mealSlotCounts[p.id] ?? 1)]),
@@ -994,19 +1029,19 @@ export function BreakfastOrderingApp({
         Math.max(1, nextSlotCounts[selectedPersonId] ?? 1),
       ),
     )
-    void upsertColleagueRows(
+    await persistRowsNow(
       nextO.map((o) => {
         const p = nextP.find((x) => x.id === o.userId)!
         return colleagueRowFromPersonnelAndOrder(p, o)
       }),
     )
-  }, [personnel, orders, mealSlotCounts, selectedPersonId, menuMap, menu])
+  }, [personnel, orders, mealSlotCounts, selectedPersonId, menuMap, menu, persistRowsNow])
 
   /**
    * 一鍵全員轉盤：略過休假；僅對 current_food 為空者抽籤，寫入品項顯示名稱（與手動輸入同欄）。
    * (不烤) 由顯示層依品項類別與勾選自動加註。
    */
-  const batchSpinAll = useCallback(() => {
+  const batchSpinAll = useCallback(async () => {
     spinSessionIdRef.current += 1
     if (spinRafRef.current != null) {
       cancelAnimationFrame(spinRafRef.current)
@@ -1053,13 +1088,15 @@ export function BreakfastOrderingApp({
       }
     })
     setOrders(nextO)
-    void upsertColleagueRows(
-      nextO.map((o) => {
-        const p = personnel.find((x) => x.id === o.userId)
-        return p ? colleagueRowFromPersonnelAndOrder(p, o) : null
-      }).filter((r) => r != null),
+    await persistRowsNow(
+      nextO
+        .map((o) => {
+          const p = personnel.find((x) => x.id === o.userId)
+          return p ? colleagueRowFromPersonnelAndOrder(p, o) : null
+        })
+        .filter((r) => r != null),
     )
-  }, [personnel, menu, menuMap, globalBudget, orders, mealSlotCounts])
+  }, [personnel, menu, menuMap, globalBudget, orders, mealSlotCounts, persistRowsNow])
 
   const startWheel = useCallback(() => {
     if (!selectedPersonId || wheelCandidates.length === 0) return
@@ -1127,7 +1164,18 @@ export function BreakfastOrderingApp({
             : o,
         ),
       )
-      schedulePersist(selectedPersonId)
+      void persistRowsNow([colleagueRowFromPersonnelAndOrder(p, {
+        ...(orders.find((o) => o.userId === selectedPersonId) ?? {
+          userId: selectedPersonId,
+          selectedDrinkId: p.fixedDrinkId ?? null,
+          selectedFoodId: mealLabel,
+          foodRemark: undefined,
+          manualFoodPrice: 0,
+        }),
+        selectedFoodId: mealLabel,
+        foodRemark: undefined,
+        manualFoodPrice: 0,
+      })])
       setLastSpinFoodId(pick.id)
       setSpinPhase('idle')
       setCelebratePick(true)
@@ -1140,7 +1188,7 @@ export function BreakfastOrderingApp({
     selectedPersonId,
     wheelCandidates,
     personnel,
-    schedulePersist,
+    persistRowsNow,
     orders,
     mealLineDrafts.length,
     mealSlotCounts,
@@ -1171,9 +1219,9 @@ export function BreakfastOrderingApp({
       setOrders(nextOrders)
       const p = nextPersonnel.find((x) => x.id === id)!
       const o = nextOrders.find((x) => x.userId === id)
-      void upsertColleagueRows([colleagueRowFromPersonnelAndOrder(p, o)])
+      void persistRowsNow([colleagueRowFromPersonnelAndOrder(p, o)])
     },
-    [personnel, orders],
+    [personnel, orders, persistRowsNow],
   )
 
   const scheduleSelectPerson = useCallback((id: string) => {
@@ -1373,7 +1421,8 @@ export function BreakfastOrderingApp({
                     </button>
                     <button
                       type="button"
-                      onClick={batchSpinAll}
+                      onClick={() => void batchSpinAll()}
+                      disabled={isPersisting}
                       className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg bg-amber-600 px-2.5 text-[11px] font-bold text-white shadow-sm hover:bg-amber-700 sm:px-3 sm:text-xs"
                       title="僅為「今日餐點」空白者抽籤；已有餐點文字者略過；休假者略過"
                     >
@@ -1381,7 +1430,8 @@ export function BreakfastOrderingApp({
                     </button>
                     <button
                       type="button"
-                      onClick={clearAllWheelFoodsGlobally}
+                      onClick={() => void clearAllWheelFoodsGlobally()}
+                      disabled={isPersisting}
                       className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 px-2.5 text-[11px] font-semibold text-rose-800 hover:bg-rose-100 sm:px-3 sm:text-xs"
                       title="清除全員今日餐點與餐點備註，並將全員恢復為出勤"
                     >
@@ -1408,6 +1458,11 @@ export function BreakfastOrderingApp({
                         />
                       </span>
                     </label>
+                    {isPersisting ? (
+                      <span className="inline-flex h-8 items-center text-[10px] font-medium text-amber-900/75 sm:text-[11px]">
+                        儲存中…
+                      </span>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -1993,11 +2048,12 @@ export function BreakfastOrderingApp({
 
                 <button
                   type="button"
-                  onClick={startWheel}
+                  onClick={() => void startWheel()}
                   disabled={
                     spinPhase === 'spinning' ||
                     wheelCandidates.length === 0 ||
-                    !foodLineIsEmpty(currentOrder?.selectedFoodId)
+                    !foodLineIsEmpty(currentOrder?.selectedFoodId) ||
+                    isPersisting
                   }
                   className="mt-4 w-full rounded-2xl bg-gradient-to-r from-orange-500 to-amber-500 py-3.5 text-base font-bold text-white shadow-lg shadow-orange-500/25 hover:from-orange-600 hover:to-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
                 >
