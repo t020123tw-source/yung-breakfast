@@ -44,6 +44,20 @@ export type BreakfastOrderingAppProps = {
 /** 備註含此字串時，單人金額額外加價（對應 current_note） */
 const EGG_REMARK_TOKEN = '+蛋'
 const EGG_EXTRA_PRICE = 15
+const SUMMARY_CATEGORY_KEYWORDS = [
+  '吐司',
+  '漢堡',
+  '蛋餅',
+  '厚片',
+  '蘿蔔糕',
+  '鐵板麵',
+  '套餐',
+  '單點',
+  '咖啡',
+  '奶茶',
+  '茶',
+  '豆漿',
+] as const
 
 function buildMenuMap(menu: MenuItem[]): Map<string, MenuItem> {
   const m = new Map<string, MenuItem>()
@@ -211,6 +225,18 @@ function formatFoodLabelForPerson(
   return s
 }
 
+function getSummaryCategoryWeight(label: string): number {
+  const idx = SUMMARY_CATEGORY_KEYWORDS.findIndex((keyword) => label.includes(keyword))
+  return idx >= 0 ? idx : 999
+}
+
+function compareSummaryLabels(a: string, b: string): number {
+  const aWeight = getSummaryCategoryWeight(a)
+  const bWeight = getSummaryCategoryWeight(b)
+  if (aWeight !== bWeight) return aWeight - bWeight
+  return a.localeCompare(b, 'zh-Hant')
+}
+
 /** 休假狀態：飲料／餐點格內之小紅圓＋白叉（置中） */
 function AbsentSlotIcon() {
   return (
@@ -301,7 +327,7 @@ function buildFoodLineForShop(
 
 function formatOneSlotSummary(slotMap: Map<string, number>): string[] {
   return [...slotMap.entries()]
-    .sort(([a], [b]) => a.localeCompare(b, 'zh-Hant'))
+    .sort(([a], [b]) => compareSummaryLabels(a, b))
     .map(([label, count]) => `${label} x ${count}`)
 }
 

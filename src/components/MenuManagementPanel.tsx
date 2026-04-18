@@ -94,7 +94,9 @@ export function MenuManagementPanel({
     () =>
       categoriesFromMenu.map((c) => ({
         category: c,
-        items: menu.filter((m) => m.categoryId === c.id),
+        items: menu
+          .filter((m) => m.categoryId === c.id)
+          .sort((a, b) => a.price - b.price || a.name.localeCompare(b.name, 'zh-Hant')),
       })),
     [categoriesFromMenu, menu],
   )

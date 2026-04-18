@@ -2,6 +2,21 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { OtherStoreEntry, Personnel } from '../domain/breakfastTypes'
 import { updateColleagueOtherStoreFields } from '../lib/colleagueSupabase'
 
+const SUMMARY_CATEGORY_KEYWORDS = [
+  '吐司',
+  '漢堡',
+  '蛋餅',
+  '厚片',
+  '蘿蔔糕',
+  '鐵板麵',
+  '套餐',
+  '單點',
+  '咖啡',
+  '奶茶',
+  '茶',
+  '豆漿',
+] as const
+
 export type OtherStorePanelProps = {
   initialPersonnel: Personnel[]
   initialEntries: OtherStoreEntry[]
@@ -32,9 +47,21 @@ function joinOtherFoodsForSave(parts: [string, string]): string {
   return `${food1} + ${food2}`
 }
 
+function getSummaryCategoryWeight(label: string): number {
+  const idx = SUMMARY_CATEGORY_KEYWORDS.findIndex((keyword) => label.includes(keyword))
+  return idx >= 0 ? idx : 999
+}
+
+function compareSummaryLabels(a: string, b: string): number {
+  const aWeight = getSummaryCategoryWeight(a)
+  const bWeight = getSummaryCategoryWeight(b)
+  if (aWeight !== bWeight) return aWeight - bWeight
+  return a.localeCompare(b, 'zh-Hant')
+}
+
 function formatOneSlotSummary(slotMap: Map<string, number>): string[] {
   return [...slotMap.entries()]
-    .sort(([a], [b]) => a.localeCompare(b, 'zh-Hant'))
+    .sort(([a], [b]) => compareSummaryLabels(a, b))
     .map(([food, count]) => `${food} x ${count}`)
 }
 
