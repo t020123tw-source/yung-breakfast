@@ -3,8 +3,8 @@ import { supabase } from './supabaseClient'
 
 /**
  * 與 Supabase public.colleagues 實際欄位一致：
- * id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent,
- * current_food, current_note, manual_food_price, internal_note, drink_remark, is_manual, other_food, other_price, other_is_on_leave, created_at
+ * id, name, order_index, fixed_drink, requires_untoasted_toast, is_not_toasted, dislike_list, is_absent,
+ * current_food, current_note, manual_food_price, internal_note, drink_remark, is_fixed_meal, is_manual, other_food, other_price, other_price_1, other_price_2, other_is_on_leave, created_at
  */
 export type ColleagueRow = {
   id: string
@@ -12,6 +12,7 @@ export type ColleagueRow = {
   order_index: number | null
   fixed_drink: string | null
   requires_untoasted_toast: boolean
+  is_not_toasted: boolean | null
   dislike_list: string[] | null
   is_absent: boolean
   current_food: string | null
@@ -19,9 +20,12 @@ export type ColleagueRow = {
   manual_food_price: number | null
   internal_note: string | null
   drink_remark: string | null
+  is_fixed_meal: boolean | null
   is_manual: boolean
   other_food: string | null
   other_price: number | null
+  other_price_1: number | null
+  other_price_2: number | null
   other_is_on_leave: boolean | null
   created_at?: string
 }
@@ -33,6 +37,7 @@ export type ColleagueUpsertPayload = {
   order_index: number | null
   fixed_drink: string | null
   requires_untoasted_toast: boolean
+  is_not_toasted: boolean | null
   dislike_list: string[] | null
   is_absent: boolean
   current_food: string | null
@@ -40,13 +45,14 @@ export type ColleagueUpsertPayload = {
   manual_food_price: number | null
   internal_note: string | null
   drink_remark: string | null
+  is_fixed_meal: boolean | null
   is_manual: boolean
 }
 
 /**
  * insert() 僅允許資料表實際存在的欄位（不含 created_at），避免多餘屬性導致 PostgREST 拒絕。
- * 與 colleagues：id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent,
- * current_food, current_note, manual_food_price, internal_note, drink_remark, is_manual, other_food, other_price, other_is_on_leave
+ * 與 colleagues：id, name, order_index, fixed_drink, requires_untoasted_toast, is_not_toasted, dislike_list, is_absent,
+ * current_food, current_note, manual_food_price, internal_note, drink_remark, is_fixed_meal, is_manual, other_food, other_price, other_price_1, other_price_2, other_is_on_leave
  */
 export type ColleagueInsertPayload = {
   id: string
@@ -54,6 +60,7 @@ export type ColleagueInsertPayload = {
   order_index: number
   fixed_drink: string | null
   requires_untoasted_toast: boolean
+  is_not_toasted: boolean
   dislike_list: string[]
   is_absent: boolean
   current_food: string | null
@@ -61,14 +68,17 @@ export type ColleagueInsertPayload = {
   manual_food_price: number | null
   internal_note: string | null
   drink_remark: string | null
+  is_fixed_meal: boolean
   is_manual: boolean
   other_food: string | null
   other_price: number | null
+  other_price_1: number | null
+  other_price_2: number | null
   other_is_on_leave: boolean
 }
 
 const COLLEAGUE_SELECT =
-  'id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent, current_food, current_note, manual_food_price, internal_note, drink_remark, is_manual, other_food, other_price, other_is_on_leave'
+  'id, name, order_index, fixed_drink, requires_untoasted_toast, is_not_toasted, dislike_list, is_absent, current_food, current_note, manual_food_price, internal_note, drink_remark, is_fixed_meal, is_manual, other_food, other_price, other_price_1, other_price_2, other_is_on_leave'
 
 const COLLEAGUE_SELECT_LEGACY =
   'id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent, current_food, current_note, internal_note, is_manual'
@@ -91,9 +101,13 @@ function isMissingOtherStoreColumnsError(err: unknown): boolean {
   return (
     text.includes('other_food') ||
     text.includes('other_price') ||
+    text.includes('other_price_1') ||
+    text.includes('other_price_2') ||
     text.includes('other_is_on_leave') ||
     text.includes('drink_remark') ||
     text.includes('manual_food_price') ||
+    text.includes('is_fixed_meal') ||
+    text.includes('is_not_toasted') ||
     text.includes('column') && text.includes('does not exist')
   )
 }
@@ -113,7 +127,8 @@ export function personnelFromRow(r: ColleagueRow): Personnel {
     dislikedFoodIds: normalizeDislikeList(r.dislike_list),
     extraRemark: r.internal_note ?? undefined,
     drinkRemark: r.drink_remark ?? '',
-    requiresUntoastedToast: r.requires_untoasted_toast,
+    isFixedMeal: r.is_fixed_meal ?? false,
+    isNotToasted: r.is_not_toasted ?? false,
     isAbsent: r.is_absent,
   }
 }
@@ -137,6 +152,8 @@ export function otherStoreEntryFromRow(r: ColleagueRow): OtherStoreEntry {
     userId: r.id,
     otherFood: normalizedFood,
     otherPrice: r.other_price ?? 0,
+    otherPrice1: r.other_price_1 ?? 0,
+    otherPrice2: r.other_price_2 ?? 0,
     otherIsOnLeave: r.other_is_on_leave ?? false,
   }
 }
@@ -159,7 +176,8 @@ export function colleagueRowFromPersonnelAndOrder(
     name: p.name,
     order_index: p.orderIndex,
     fixed_drink: p.fixedDrinkId ?? null,
-    requires_untoasted_toast: p.requiresUntoastedToast ?? false,
+    requires_untoasted_toast: false,
+    is_not_toasted: p.isNotToasted ?? false,
     dislike_list: [...p.dislikedFoodIds],
     is_absent: p.isAbsent ?? false,
     current_food: mealOrder.selectedFoodId ?? null,
@@ -167,6 +185,7 @@ export function colleagueRowFromPersonnelAndOrder(
     manual_food_price: mealOrder.manualFoodPrice ?? 0,
     internal_note: p.extraRemark ?? null,
     drink_remark: p.drinkRemark ?? '',
+    is_fixed_meal: p.isFixedMeal ?? false,
     is_manual: false,
   }
 }
@@ -186,7 +205,7 @@ export async function fetchColleaguesFromSupabase(): Promise<{
   if (primary.error) {
     if (!isMissingOtherStoreColumnsError(primary.error)) throw primary.error
     console.warn(
-      'colleagues.other_food / other_price / other_is_on_leave / drink_remark / manual_food_price 可能尚未被 API schema cache 識別，退回舊查詢。',
+      'colleagues.other_food / other_price / other_price_1 / other_price_2 / other_is_on_leave / drink_remark / manual_food_price / is_fixed_meal / is_not_toasted 可能尚未被 API schema cache 識別，退回舊查詢。',
       primary.error,
     )
     const legacy = await supabase
@@ -200,15 +219,27 @@ export async function fetchColleaguesFromSupabase(): Promise<{
     ) as Array<
       Omit<
         ColleagueRow,
-        'other_food' | 'other_price' | 'other_is_on_leave' | 'drink_remark' | 'manual_food_price'
+        | 'other_food'
+        | 'other_price'
+        | 'other_price_1'
+        | 'other_price_2'
+        | 'other_is_on_leave'
+        | 'drink_remark'
+        | 'manual_food_price'
+        | 'is_fixed_meal'
+        | 'is_not_toasted'
       >
     >).map(
       (row) => ({
         ...row,
         manual_food_price: 0,
         drink_remark: '',
+        is_fixed_meal: false,
+        is_not_toasted: false,
         other_food: '',
         other_price: 0,
+        other_price_1: 0,
+        other_price_2: 0,
         other_is_on_leave: false,
       }),
     )
@@ -224,23 +255,33 @@ export async function fetchColleaguesFromSupabase(): Promise<{
 
 /** 依列表新順序寫回 order_index（1-based） */
 export async function updateColleagueOrderIndices(orderedIds: string[]): Promise<void> {
-  if (orderedIds.length === 0) return
-  for (let i = 0; i < orderedIds.length; i++) {
-    const id = orderedIds[i]
-    const { error } = await supabase
-      .from('colleagues')
-      .update({ order_index: i + 1 })
-      .eq('id', id)
-    if (error) throw error
+  try {
+    if (orderedIds.length === 0) return
+    for (let i = 0; i < orderedIds.length; i++) {
+      const id = orderedIds[i]
+      const { error } = await supabase
+        .from('colleagues')
+        .update({ order_index: i + 1 })
+        .eq('id', id)
+      if (error) throw error
+    }
+  } catch (err) {
+    console.error('Supabase Error:', err)
+    throw err
   }
 }
 
 export async function upsertColleagueRows(rows: ColleagueUpsertPayload[]): Promise<void> {
-  if (rows.length === 0) return
-  const { error } = await supabase.from('colleagues').upsert(rows, {
-    onConflict: 'id',
-  })
-  if (error) throw error
+  try {
+    if (rows.length === 0) return
+    const { error } = await supabase.from('colleagues').upsert(rows, {
+      onConflict: 'id',
+    })
+    if (error) throw error
+  } catch (err) {
+    console.error('Supabase Error:', err)
+    throw err
+  }
 }
 
 /** 新建同事一筆 insert（僅含資料表欄位，無其他屬性） */
@@ -255,6 +296,7 @@ export function buildNewColleagueInsertPayload(
     order_index: orderIndex,
     fixed_drink: null,
     requires_untoasted_toast: false,
+    is_not_toasted: false,
     dislike_list: [],
     is_absent: false,
     current_food: null,
@@ -262,34 +304,46 @@ export function buildNewColleagueInsertPayload(
     manual_food_price: 0,
     internal_note: null,
     drink_remark: '',
+    is_fixed_meal: false,
     is_manual: false,
     other_food: null,
     other_price: null,
+    other_price_1: null,
+    other_price_2: null,
     other_is_on_leave: false,
   }
 }
 
 export async function insertColleagueRow(row: ColleagueInsertPayload): Promise<void> {
-  const payload: ColleagueInsertPayload = {
-    id: row.id,
-    name: row.name,
-    order_index: row.order_index,
-    fixed_drink: row.fixed_drink,
-    requires_untoasted_toast: row.requires_untoasted_toast,
-    dislike_list: row.dislike_list,
-    is_absent: row.is_absent,
-    current_food: row.current_food,
-    current_note: row.current_note,
-    manual_food_price: row.manual_food_price,
-    internal_note: row.internal_note,
-    drink_remark: row.drink_remark,
-    is_manual: row.is_manual,
-    other_food: row.other_food,
-    other_price: row.other_price,
-    other_is_on_leave: row.other_is_on_leave,
+  try {
+    const payload: ColleagueInsertPayload = {
+      id: row.id,
+      name: row.name,
+      order_index: row.order_index,
+      fixed_drink: row.fixed_drink,
+      requires_untoasted_toast: row.requires_untoasted_toast,
+      is_not_toasted: row.is_not_toasted,
+      dislike_list: row.dislike_list,
+      is_absent: row.is_absent,
+      current_food: row.current_food,
+      current_note: row.current_note,
+      manual_food_price: row.manual_food_price,
+      internal_note: row.internal_note,
+      drink_remark: row.drink_remark,
+      is_fixed_meal: row.is_fixed_meal,
+      is_manual: row.is_manual,
+      other_food: row.other_food,
+      other_price: row.other_price,
+      other_price_1: row.other_price_1,
+      other_price_2: row.other_price_2,
+      other_is_on_leave: row.other_is_on_leave,
+    }
+    const { error } = await supabase.from('colleagues').insert(payload)
+    if (error) throw error
+  } catch (err) {
+    console.error('Supabase Error:', err)
+    throw err
   }
-  const { error } = await supabase.from('colleagues').insert(payload)
-  if (error) throw error
 }
 
 export async function updateColleagueOtherStoreFields(
@@ -297,11 +351,70 @@ export async function updateColleagueOtherStoreFields(
   patch: {
     other_food?: string | null
     other_price?: number | null
+    other_price_1?: number | null
+    other_price_2?: number | null
     other_is_on_leave?: boolean
   },
 ): Promise<void> {
-  const { error } = await supabase.from('colleagues').update(patch).eq('id', userId)
-  if (error) throw error
+  try {
+    const { error } = await supabase.from('colleagues').update(patch).eq('id', userId)
+    if (error) throw error
+  } catch (err) {
+    console.error('Supabase Error:', err)
+    throw err
+  }
+}
+
+export async function bulkClearBreakfastFieldsByIds(ids: string[]): Promise<void> {
+  try {
+    if (ids.length === 0) return
+    const { error } = await supabase
+      .from('colleagues')
+      .update({
+        current_food: '',
+        current_note: null,
+        manual_food_price: 0,
+      })
+      .in('id', ids)
+    if (error) throw error
+  } catch (err) {
+    console.error('Supabase Error:', err)
+    throw err
+  }
+}
+
+export async function updateColleagueFixedMealStatus(
+  userId: string,
+  isFixedMeal: boolean,
+): Promise<void> {
+  try {
+    const { error } = await supabase
+      .from('colleagues')
+      .update({ is_fixed_meal: isFixedMeal })
+      .eq('id', userId)
+    if (error) throw error
+  } catch (err) {
+    console.error('Supabase Error:', err)
+    throw err
+  }
+}
+
+export async function updateColleagueBreakfastFields(
+  userId: string,
+  patch: {
+    current_food?: string | null
+    current_note?: string | null
+    manual_food_price?: number | null
+    is_absent?: boolean
+  },
+): Promise<void> {
+  try {
+    const { error } = await supabase.from('colleagues').update(patch).eq('id', userId)
+    if (error) throw error
+  } catch (err) {
+    console.error('Supabase Error:', err)
+    throw err
+  }
 }
 
 export async function deleteColleagueById(id: string): Promise<void> {

@@ -15,7 +15,8 @@ export type OtherStorePanelProps = {
 
 type EntryDraft = {
   otherFoods: [string, string]
-  otherPrice: string
+  otherPrice1: string
+  otherPrice2: string
   otherIsOnLeave: boolean
 }
 
@@ -75,35 +76,21 @@ function formatOtherStoreFoodLabel(
   return label
 }
 
-function resolveKnownOtherStorePrice(
-  foods: [string, string],
-  menuByName: Map<string, MenuItem>,
-): number | null {
-  let total = 0
-  let hasAny = false
-  for (const food of foods) {
-    const label = food.trim()
-    if (!label) continue
-    hasAny = true
-    const item = menuByName.get(label)
-    if (!item) return null
-    total += item.price
-  }
-  return hasAny ? total : 0
+function normalizeOtherStorePriceText(raw: unknown): string {
+  if (raw == null) return ''
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n <= 0) return ''
+  return String(Math.round(n))
 }
 
-function promptForOtherStorePrice(
-  label: string,
-  currentValue: string,
-): string {
-  const value = window.prompt(
-    `找不到此餐點金額，請手動輸入金額：\n${label}`,
-    currentValue.trim(),
-  )
-  if (value == null) return currentValue
-  const parsed = Number(value.replace(/[^\d.]/g, ''))
-  if (!Number.isFinite(parsed) || parsed <= 0) return ''
-  return String(Math.round(parsed))
+function parseOtherStorePriceText(raw: string): number {
+  const n = Number(raw.trim())
+  if (!Number.isFinite(n) || n <= 0) return 0
+  return Math.round(n)
+}
+
+function computeOtherStoreTotal(price1: string, price2: string): number {
+  return (Number(price1) || 0) + (Number(price2) || 0)
 }
 
 function formatOneSlotSummary(slotMap: Map<string, number>, menu: MenuItem[]): string[] {
@@ -145,12 +132,8 @@ function normalizeDraftMap(
         p.id,
         {
           otherFoods: otherFoodsForInputs(entry?.otherFood),
-          otherPrice:
-            entry?.otherPrice == null ||
-            Number.isNaN(entry.otherPrice) ||
-            entry.otherPrice === 0
-              ? ''
-              : String(entry.otherPrice),
+          otherPrice1: normalizeOtherStorePriceText(entry?.otherPrice1),
+          otherPrice2: normalizeOtherStorePriceText(entry?.otherPrice2),
           otherIsOnLeave: entry?.otherIsOnLeave ?? false,
         },
       ]
@@ -188,14 +171,12 @@ export function OtherStorePanel({
 
   const persistDraft = useCallback(async (userId: string, draft: EntryDraft) => {
     try {
+      const total = computeOtherStoreTotal(draft.otherPrice1, draft.otherPrice2)
       await updateColleagueOtherStoreFields(userId, {
         other_food: joinOtherFoodsForSave(draft.otherFoods),
-        other_price:
-          draft.otherPrice.trim() === ''
-            ? 0
-            : Number.isFinite(Number(draft.otherPrice))
-              ? Number(draft.otherPrice)
-              : 0,
+        other_price: total,
+        other_price_1: parseOtherStorePriceText(draft.otherPrice1),
+        other_price_2: parseOtherStorePriceText(draft.otherPrice2),
         other_is_on_leave: draft.otherIsOnLeave,
       })
     } catch (e) {
@@ -248,27 +229,26 @@ export function OtherStorePanel({
       personnel.map((p) => [
         p.id,
         {
-          ...(drafts[p.id] ?? { otherFoods: ['', ''] as [string, string], otherPrice: '', otherIsOnLeave: false }),
-          otherFoods: (drafts[p.id]?.otherFoods ?? ['', '']).map((food) => {
-            const label = food.trim()
-            return menuByName.has(label) ? '' : label
-          }) as [string, string],
-          otherPrice: (() => {
-            const currentPrice = Number(drafts[p.id]?.otherPrice ?? '')
-            const removedKnownTotal = (drafts[p.id]?.otherFoods ?? ['', '']).reduce(
-              (sum, food) => {
-                const item = menuByName.get(food.trim())
-                return item ? sum + item.price : sum
-              },
-              0,
-            )
-            const keptHasValue = (drafts[p.id]?.otherFoods ?? ['', '']).some(
-              (food) => food.trim() !== '' && !menuByName.has(food.trim()),
-            )
-            if (!keptHasValue) return ''
-            if (!Number.isFinite(currentPrice)) return ''
-            return String(Math.max(0, currentPrice - removedKnownTotal))
-          })(),
+          ...(drafts[p.id] ?? {
+            otherFoods: ['', ''] as [string, string],
+            otherPrice1: '',
+            otherPrice2: '',
+            otherIsOnLeave: false,
+          }),
+          otherFoods: [
+            menuByName.has(drafts[p.id]?.otherFoods?.[0]?.trim() ?? '')
+              ? ''
+              : drafts[p.id]?.otherFoods?.[0] ?? '',
+            menuByName.has(drafts[p.id]?.otherFoods?.[1]?.trim() ?? '')
+              ? ''
+              : drafts[p.id]?.otherFoods?.[1] ?? '',
+          ],
+          otherPrice1: menuByName.has(drafts[p.id]?.otherFoods?.[0]?.trim() ?? '')
+            ? ''
+            : drafts[p.id]?.otherPrice1 ?? '',
+          otherPrice2: menuByName.has(drafts[p.id]?.otherFoods?.[1]?.trim() ?? '')
+            ? ''
+            : drafts[p.id]?.otherPrice2 ?? '',
         },
       ]),
     ) as Record<string, EntryDraft>
@@ -278,10 +258,12 @@ export function OtherStorePanel({
         personnel.map((p) =>
           updateColleagueOtherStoreFields(p.id, {
             other_food: joinOtherFoodsForSave(nextDrafts[p.id]?.otherFoods ?? ['', '']),
-            other_price:
-              nextDrafts[p.id]?.otherPrice.trim() === ''
-                ? 0
-                : Number(nextDrafts[p.id]?.otherPrice ?? 0),
+            other_price: computeOtherStoreTotal(
+              nextDrafts[p.id]?.otherPrice1 ?? '',
+              nextDrafts[p.id]?.otherPrice2 ?? '',
+            ),
+            other_price_1: parseOtherStorePriceText(nextDrafts[p.id]?.otherPrice1 ?? ''),
+            other_price_2: parseOtherStorePriceText(nextDrafts[p.id]?.otherPrice2 ?? ''),
           }),
         ),
       )
@@ -297,16 +279,15 @@ export function OtherStorePanel({
     for (const p of personnel) {
       const draft = drafts[p.id]
       if (draft?.otherIsOnLeave) continue
-      const priceText = (draft?.otherPrice ?? '').trim()
       const [slot1, slot2] = draft?.otherFoods ?? ['', '']
       const food1 = formatOtherStoreFoodLabel(slot1, p, menuByName)
       const food2 = formatOtherStoreFoodLabel(slot2, p, menuByName)
       if (food1) slot1Map.set(food1, (slot1Map.get(food1) ?? 0) + 1)
       if (food2) slot2Map.set(food2, (slot2Map.get(food2) ?? 0) + 1)
-      if (priceText !== '') {
-        const n = Number(priceText)
-        if (Number.isFinite(n)) totalPrice += n
-      }
+      totalPrice += computeOtherStoreTotal(
+        draft?.otherPrice1 ?? '',
+        draft?.otherPrice2 ?? '',
+      )
     }
     const foodSummaryLines = [
       ...formatOneSlotSummary(slot1Map, menu),
@@ -317,7 +298,7 @@ export function OtherStorePanel({
 
   return (
     <div className="w-full text-slate-900">
-      <div className="mx-auto flex w-full max-w-5xl flex-col px-4 py-4 sm:px-6 lg:px-8 lg:py-5">
+      <div className="flex w-full max-w-none flex-col px-4 py-4 sm:px-5 lg:px-6 lg:py-5">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-2xl border border-amber-200/70 bg-white/90 shadow-sm">
           <div className="border-b border-amber-100 px-3 py-3 sm:px-4">
             <div className="flex flex-wrap items-center justify-between gap-2">
@@ -346,106 +327,221 @@ export function OtherStorePanel({
             {personnel.map((p) => {
               const draft = drafts[p.id] ?? {
                 otherFoods: ['', ''] as [string, string],
-                otherPrice: '',
+                otherPrice1: '',
+                otherPrice2: '',
                 otherIsOnLeave: false,
               }
+              const totalPriceText = (() => {
+                const total = computeOtherStoreTotal(draft.otherPrice1, draft.otherPrice2)
+                return total > 0 ? String(total) : ''
+              })()
               return (
                 <li key={p.id} className="border-b border-amber-100/80 last:border-b-0">
-                  <div className="flex gap-0.5 py-1 pl-0.5 pr-0.5 sm:gap-1 sm:pl-1 sm:pr-1">
-                    <div className="flex w-20 shrink-0 min-h-[2.2rem] min-w-0 items-stretch">
+                  <div className="flex items-center gap-2 py-1 pl-0.5 pr-0.5 sm:gap-2.5 sm:pl-1 sm:pr-1">
+                    <div className="flex w-24 shrink-0 min-h-[2.2rem] min-w-0 items-stretch">
                       <button
                         type="button"
                         onDoubleClick={() => void togglePersonAbsent(p.id)}
                         title={`${p.name}（雙擊切換休假）`}
-                        className={`flex min-h-[2.2rem] min-w-0 flex-1 items-center justify-center rounded-lg border px-1 py-0.5 text-center text-xs font-semibold leading-tight shadow-sm sm:text-sm ${
+                        className={`flex min-h-[2.2rem] min-w-0 flex-1 items-center justify-center rounded-lg border px-1.5 py-0.5 text-center text-xs font-semibold leading-tight shadow-sm sm:text-sm ${
                           draft.otherIsOnLeave
                             ? 'border-slate-200/90 bg-slate-100 text-slate-500 opacity-60'
                             : 'border-slate-200/90 bg-slate-100 text-slate-900'
                         }`}
                       >
-                        <span className="line-clamp-2 break-words">{p.name}</span>
+                        <span className="truncate">{p.name}</span>
                       </button>
                     </div>
 
-                    <div className="flex min-h-[2.2rem] min-w-0 flex-1 items-stretch">
-                      <div className="grid min-h-[2.2rem] w-full min-w-0 grid-cols-2 gap-2">
-                        {draft.otherIsOnLeave
-                          ? draft.otherFoods.map((_, idx) => (
-                              <div
-                                key={`${p.id}-other-food-absent-${idx}`}
-                                className="flex min-h-[2.2rem] min-w-0 items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100"
-                              >
-                                <AbsentSlotIcon />
-                              </div>
-                            ))
-                          : draft.otherFoods.map((food, idx) => (
-                              <input
-                                key={`${p.id}-other-food-${idx}`}
-                                type="text"
-                                value={food}
-                                onChange={(e) => {
-                                  const nextDraft = {
-                                    ...draft,
-                                    otherFoods: draft.otherFoods.map((item, i) =>
-                                      i === idx ? e.target.value : item,
-                                    ) as [string, string],
-                                  }
-                                  setDrafts((prev) => ({
-                                    ...prev,
-                                    [p.id]: nextDraft,
-                                  }))
-                                  if (!nextDraft.otherIsOnLeave) {
-                                    schedulePersistDraft(p.id, nextDraft)
-                                  }
-                                }}
-                                onBlur={async () => {
-                                  if (draft.otherIsOnLeave) return
-                                  const nextFood = joinOtherFoodsForSave(draft.otherFoods)
-                                  const normalizedFoods = otherFoodsForInputs(nextFood)
-                                  const resolvedPrice = resolveKnownOtherStorePrice(
-                                    normalizedFoods,
-                                    menuByName,
-                                  )
-                                  const hasExistingPrice =
-                                    draft.otherPrice.trim() !== '' &&
-                                    Number.isFinite(Number(draft.otherPrice)) &&
-                                    Number(draft.otherPrice) > 0
-                                  const nextDraft = {
-                                    ...draft,
-                                    otherFoods: normalizedFoods,
-                                    otherPrice:
-                                      resolvedPrice == null
-                                        ? hasExistingPrice
-                                          ? draft.otherPrice
-                                          : promptForOtherStorePrice(
-                                              normalizedFoods.filter(Boolean).join(' + '),
-                                              '',
-                                            )
-                                        : resolvedPrice > 0
-                                          ? String(resolvedPrice)
-                                          : '',
-                                  }
-                                  try {
-                                    setDrafts((prev) => ({ ...prev, [p.id]: nextDraft }))
-                                    await flushPersistDraft(p.id, nextDraft)
-                                    setDrafts((prev) => ({
-                                      ...prev,
-                                      [p.id]: nextDraft,
-                                    }))
-                                  } catch (e) {
-                                    console.error(e)
-                                  }
-                                }}
-                                placeholder={`餐點 ${idx + 1}`}
-                                autoComplete="off"
-                                disabled={!!draft.otherIsOnLeave}
-                                className="min-h-[2.2rem] min-w-0 w-full rounded-lg border border-slate-200/90 bg-white px-2 py-0.5 text-xs leading-tight text-slate-900 outline-none ring-amber-400/30 focus:ring-2 sm:text-sm"
-                              />
-                            ))}
-                      </div>
+                    <div className="flex min-h-[2.2rem] min-w-0 flex-1 items-center gap-2">
+                      {draft.otherIsOnLeave ? (
+                        <>
+                          <div className="flex min-h-[2.2rem] min-w-0 flex-1 items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100">
+                            <AbsentSlotIcon />
+                          </div>
+                          <div className="flex w-20 shrink-0 items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100">
+                            <AbsentSlotIcon />
+                          </div>
+                          <div className="flex min-h-[2.2rem] min-w-0 flex-1 items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100">
+                            <AbsentSlotIcon />
+                          </div>
+                          <div className="flex w-20 shrink-0 items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100">
+                            <AbsentSlotIcon />
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <input
+                            type="text"
+                            value={draft.otherFoods[0]}
+                            onChange={(e) => {
+                              const nextDraft = {
+                                ...draft,
+                                otherFoods: draft.otherFoods.map((item, i) =>
+                                  i === 0 ? e.target.value : item,
+                                ) as [string, string],
+                              }
+                              setDrafts((prev) => ({
+                                ...prev,
+                                [p.id]: nextDraft,
+                              }))
+                              if (!nextDraft.otherIsOnLeave) {
+                                schedulePersistDraft(p.id, nextDraft)
+                              }
+                            }}
+                            onBlur={async () => {
+                              if (draft.otherIsOnLeave) return
+                              const nextFood = joinOtherFoodsForSave(draft.otherFoods)
+                              const normalizedFoods = otherFoodsForInputs(nextFood)
+                              const nextDraft = {
+                                ...draft,
+                                otherFoods: normalizedFoods,
+                              }
+                              try {
+                                setDrafts((prev) => ({ ...prev, [p.id]: nextDraft }))
+                                await flushPersistDraft(p.id, nextDraft)
+                                setDrafts((prev) => ({
+                                  ...prev,
+                                  [p.id]: nextDraft,
+                                }))
+                              } catch (e) {
+                                console.error(e)
+                              }
+                            }}
+                            placeholder="餐點 1"
+                            autoComplete="off"
+                            disabled={!!draft.otherIsOnLeave}
+                            className="min-h-[2.2rem] min-w-0 w-full flex-1 rounded-lg border border-slate-200/90 bg-white px-2 py-0.5 text-xs leading-tight text-slate-900 outline-none ring-amber-400/30 focus:ring-2 sm:text-sm"
+                          />
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={draft.otherPrice1}
+                            onChange={(e) => {
+                              const nextValue = e.target.value.replace(/[^\d]/g, '')
+                              const nextDraft = {
+                                ...draft,
+                                otherPrice1: nextValue,
+                              }
+                              setDrafts((prev) => ({
+                                ...prev,
+                                [p.id]: nextDraft,
+                              }))
+                              if (!nextDraft.otherIsOnLeave) {
+                                schedulePersistDraft(p.id, nextDraft)
+                              }
+                            }}
+                            onBlur={async () => {
+                              if (draft.otherIsOnLeave) return
+                              const nextValue = normalizeOtherStorePriceText(draft.otherPrice1)
+                              const nextDraft = {
+                                ...draft,
+                                otherPrice1: nextValue,
+                              }
+                              try {
+                                setDrafts((prev) => ({ ...prev, [p.id]: nextDraft }))
+                                await flushPersistDraft(p.id, nextDraft)
+                                setDrafts((prev) => ({
+                                  ...prev,
+                                  [p.id]: nextDraft,
+                                }))
+                              } catch (e) {
+                                console.error(e)
+                              }
+                            }}
+                            placeholder="金額"
+                            autoComplete="off"
+                            disabled={!!draft.otherIsOnLeave}
+                            className="min-h-[2.2rem] w-20 shrink-0 rounded-lg border border-slate-200/90 bg-white px-2 py-0.5 text-right text-xs font-medium leading-tight text-slate-900 outline-none ring-amber-400/30 focus:ring-2 sm:text-sm"
+                          />
+                          <input
+                            type="text"
+                            value={draft.otherFoods[1]}
+                            onChange={(e) => {
+                              const nextDraft = {
+                                ...draft,
+                                otherFoods: draft.otherFoods.map((item, i) =>
+                                  i === 1 ? e.target.value : item,
+                                ) as [string, string],
+                              }
+                              setDrafts((prev) => ({
+                                ...prev,
+                                [p.id]: nextDraft,
+                              }))
+                              if (!nextDraft.otherIsOnLeave) {
+                                schedulePersistDraft(p.id, nextDraft)
+                              }
+                            }}
+                            onBlur={async () => {
+                              if (draft.otherIsOnLeave) return
+                              const nextFood = joinOtherFoodsForSave(draft.otherFoods)
+                              const normalizedFoods = otherFoodsForInputs(nextFood)
+                              const nextDraft = {
+                                ...draft,
+                                otherFoods: normalizedFoods,
+                              }
+                              try {
+                                setDrafts((prev) => ({ ...prev, [p.id]: nextDraft }))
+                                await flushPersistDraft(p.id, nextDraft)
+                                setDrafts((prev) => ({
+                                  ...prev,
+                                  [p.id]: nextDraft,
+                                }))
+                              } catch (e) {
+                                console.error(e)
+                              }
+                            }}
+                            placeholder="餐點 2"
+                            autoComplete="off"
+                            disabled={!!draft.otherIsOnLeave}
+                            className="min-h-[2.2rem] min-w-0 w-full flex-1 rounded-lg border border-slate-200/90 bg-white px-2 py-0.5 text-xs leading-tight text-slate-900 outline-none ring-amber-400/30 focus:ring-2 sm:text-sm"
+                          />
+                          <input
+                            type="text"
+                            inputMode="numeric"
+                            value={draft.otherPrice2}
+                            onChange={(e) => {
+                              const nextValue = e.target.value.replace(/[^\d]/g, '')
+                              const nextDraft = {
+                                ...draft,
+                                otherPrice2: nextValue,
+                              }
+                              setDrafts((prev) => ({
+                                ...prev,
+                                [p.id]: nextDraft,
+                              }))
+                              if (!nextDraft.otherIsOnLeave) {
+                                schedulePersistDraft(p.id, nextDraft)
+                              }
+                            }}
+                            onBlur={async () => {
+                              if (draft.otherIsOnLeave) return
+                              const nextValue = normalizeOtherStorePriceText(draft.otherPrice2)
+                              const nextDraft = {
+                                ...draft,
+                                otherPrice2: nextValue,
+                              }
+                              try {
+                                setDrafts((prev) => ({ ...prev, [p.id]: nextDraft }))
+                                await flushPersistDraft(p.id, nextDraft)
+                                setDrafts((prev) => ({
+                                  ...prev,
+                                  [p.id]: nextDraft,
+                                }))
+                              } catch (e) {
+                                console.error(e)
+                              }
+                            }}
+                            placeholder="金額"
+                            autoComplete="off"
+                            disabled={!!draft.otherIsOnLeave}
+                            className="min-h-[2.2rem] w-20 shrink-0 rounded-lg border border-slate-200/90 bg-white px-2 py-0.5 text-right text-xs font-medium leading-tight text-slate-900 outline-none ring-amber-400/30 focus:ring-2 sm:text-sm"
+                          />
+                        </>
+                      )}
                     </div>
 
-                    <div className="flex w-16 shrink-0 min-h-[2.2rem] min-w-0 items-stretch">
+                    <div className="flex w-20 shrink-0 min-h-[2.2rem] min-w-0 items-stretch">
                       {draft.otherIsOnLeave ? (
                         <div className="flex min-h-[2.2rem] w-full items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100">
                           <AbsentSlotIcon />
@@ -453,46 +549,12 @@ export function OtherStorePanel({
                       ) : (
                         <input
                           type="text"
-                          inputMode="decimal"
-                          value={draft.otherPrice}
-                          onChange={(e) => {
-                            const nextDraft = { ...draft, otherPrice: e.target.value }
-                            setDrafts((prev) => ({
-                              ...prev,
-                              [p.id]: nextDraft,
-                            }))
-                            if (!nextDraft.otherIsOnLeave) {
-                              schedulePersistDraft(p.id, nextDraft)
-                            }
-                          }}
-                          onBlur={async () => {
-                            if (draft.otherIsOnLeave) return
-                            const priceText = draft.otherPrice.trim()
-                            const nextPrice =
-                              priceText === ''
-                                ? 0
-                                : Number.isFinite(Number(priceText))
-                                  ? Number(priceText)
-                                  : 0
-                            const nextDraft = {
-                              ...draft,
-                              otherPrice: nextPrice === 0 ? '' : String(nextPrice),
-                            }
-                            try {
-                              setDrafts((prev) => ({ ...prev, [p.id]: nextDraft }))
-                              await flushPersistDraft(p.id, nextDraft)
-                              setDrafts((prev) => ({
-                                ...prev,
-                                [p.id]: nextDraft,
-                              }))
-                            } catch (e) {
-                              console.error(e)
-                            }
-                          }}
-                          placeholder="金額"
+                          readOnly
+                          value={totalPriceText}
+                          placeholder="總額"
                           autoComplete="off"
                           disabled={!!draft.otherIsOnLeave}
-                          className="min-h-[2.2rem] w-full rounded-lg border border-slate-200/90 bg-white px-2 py-0.5 text-right text-xs font-medium leading-tight text-slate-900 outline-none ring-amber-400/30 focus:ring-2 sm:text-sm"
+                          className="min-h-[2.2rem] w-full rounded-lg border border-slate-200/90 bg-slate-50 px-2 py-0.5 text-right text-xs font-medium leading-tight text-slate-900 outline-none sm:text-sm"
                         />
                       )}
                     </div>

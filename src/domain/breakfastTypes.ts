@@ -10,8 +10,10 @@ export type Personnel = {
   extraRemark?: string
   /** 飲料備註：僅套用於飲料類品項與固定飲料 */
   drinkRemark?: string
-  /** 勾選後，該員點吐司類餐點時自動加 (不烤) */
-  requiresUntoastedToast?: boolean
+  /** 固定餐點：一鍵淨空時保留早餐資料 */
+  isFixedMeal?: boolean
+  /** 勾選後，若餐點包含吐司，會自動在備註加入不烤 */
+  isNotToasted?: boolean
   /** 休假：飲料／餐點格顯示紅底白叉圖示，不列入店家彙整 */
   isAbsent?: boolean
 }
@@ -36,5 +38,7 @@ export type OtherStoreEntry = {
   userId: string
   otherFood?: string
   otherPrice?: number | null
+  otherPrice1?: number | null
+  otherPrice2?: number | null
   otherIsOnLeave?: boolean
 }

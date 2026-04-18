@@ -18,10 +18,12 @@ import {
 } from '../data/menuData'
 import type { Order, Personnel } from '../domain/breakfastTypes'
 import {
+  bulkClearBreakfastFieldsByIds,
   buildNewColleagueInsertPayload,
   colleagueRowFromPersonnelAndOrder,
   deleteColleagueById,
   insertColleagueRow,
+  updateColleagueFixedMealStatus,
   updateColleagueOrderIndices,
   upsertColleagueRows,
 } from '../lib/colleagueSupabase'
@@ -44,6 +46,7 @@ export type BreakfastOrderingAppProps = {
 /** 備註含此字串時，單人金額額外加價（對應 current_note） */
 const EGG_REMARK_TOKEN = '+蛋'
 const EGG_EXTRA_PRICE = 15
+const NOT_TOASTED_REMARK_TOKEN = '不烤'
 
 function buildMenuMap(menu: MenuItem[]): Map<string, MenuItem> {
   const m = new Map<string, MenuItem>()
@@ -117,6 +120,10 @@ function mealLinesForEditor(
   return [...slots, ...emptyMealLines(slotCount - slots.length)]
 }
 
+function replaceMealDraftLine(lines: string[], index: number, value: string): string[] {
+  return lines.map((line, lineIndex) => (lineIndex === index ? value : line))
+}
+
 function serializeEmptyMealSlots(count: number): string {
   return emptyMealLines(count).join(' + ')
 }
@@ -126,10 +133,6 @@ function joinMealLinesToCurrentFood(lines: string[]): string | null {
   const filtered = lines.map((x) => x.trim()).filter(Boolean)
   if (filtered.length === 0) return null
   return filtered.join(' + ')
-}
-
-function joinMealSlotsPreservingStructure(lines: string[]): string {
-  return lines.map((x) => x.trim()).join(' + ')
 }
 
 function pickDistinctMealLabelsForPerson(
@@ -261,7 +264,55 @@ function promptForManualFoodPrice(
   return Number.isFinite(parsed) ? Math.max(0, Math.round(parsed)) : 0
 }
 
-/** 依人員設定：餐點走 foodRemark，飲料走 drinkRemark；吐司類可自動加 (不烤) */
+function segmentLooksLikeToast(
+  segment: string,
+  menuMap: Map<string, MenuItem>,
+  menu: MenuItem[],
+): boolean {
+  const item = resolveMealItemFromSegment(segment, menuMap, menu)
+  if (item) return isToastItem(item) || item.name.includes('吐司')
+  return segment.includes('吐司')
+}
+
+function mealContainsToast(
+  raw: string | null | undefined,
+  menuMap: Map<string, MenuItem>,
+  menu: MenuItem[],
+): boolean {
+  return splitCurrentFoodSegments(raw).some((segment) =>
+    segmentLooksLikeToast(segment, menuMap, menu),
+  )
+}
+
+function normalizeRemarkTokens(raw: string | null | undefined): string[] {
+  return (raw ?? '')
+    .split(/[，,]/)
+    .map((token) => token.trim())
+    .filter(Boolean)
+}
+
+function stringifyRemarkTokens(tokens: string[]): string | undefined {
+  const unique = tokens.filter((token, index) => tokens.indexOf(token) === index)
+  return unique.length > 0 ? unique.join(', ') : undefined
+}
+
+function applyNotToastedRemark(
+  rawRemark: string | null | undefined,
+  selectedFoodId: string | null | undefined,
+  isNotToasted: boolean | null | undefined,
+  menuMap: Map<string, MenuItem>,
+  menu: MenuItem[],
+): string | undefined {
+  const tokens = normalizeRemarkTokens(rawRemark).filter(
+    (token) => token !== NOT_TOASTED_REMARK_TOKEN,
+  )
+  const shouldAppend =
+    !!isNotToasted && mealContainsToast(selectedFoodId, menuMap, menu)
+  if (shouldAppend) tokens.push(NOT_TOASTED_REMARK_TOKEN)
+  return stringifyRemarkTokens(tokens)
+}
+
+/** 依人員設定：餐點走 foodRemark，飲料走 drinkRemark */
 function formatFoodLabelForPerson(
   food: MenuItem,
   person: Personnel | undefined,
@@ -269,9 +320,6 @@ function formatFoodLabelForPerson(
 ): string {
   let s = food.name
   if (isDrinkItem(food)) return appendDisplayRemark(s, person?.drinkRemark)
-  if (person?.requiresUntoastedToast && isToastItem(food)) {
-    s += '(不烤)'
-  }
   return appendDisplayRemark(s, options?.foodRemark)
 }
 
@@ -324,7 +372,7 @@ function ColleagueDragHandleIcon() {
   )
 }
 
-/** 單段餐點字串 → 店家彙整用標籤（含吐司不烤） */
+/** 單段餐點字串 → 店家彙整用標籤（含備註） */
 function labelForFoodSegment(
   menuMap: Map<string, MenuItem>,
   menu: MenuItem[],
@@ -375,8 +423,7 @@ function buildShopSummaryLines(
   personnel: Personnel[],
 ): string[] {
   const drinkMap = new Map<string, number>()
-  const slot1Map = new Map<string, number>()
-  const slot2Map = new Map<string, number>()
+  const slotMaps = new Map<number, Map<string, number>>()
 
   for (const o of orders) {
     const person = personnel.find((p) => p.id === o.userId)
@@ -393,20 +440,22 @@ function buildShopSummaryLines(
       }
     }
     if (o.selectedFoodId?.trim()) {
-      const slots = splitCurrentFoodSlots(o.selectedFoodId)
-      const slot1 = slots[0] ?? ''
-      const slot2 = slots[1] ?? ''
-      const line1 = labelForFoodSegment(menuMap, menu, slot1, person, o.foodRemark)
-      const line2 = labelForFoodSegment(menuMap, menu, slot2, person, o.foodRemark)
-      if (line1) slot1Map.set(line1, (slot1Map.get(line1) ?? 0) + 1)
-      if (line2) slot2Map.set(line2, (slot2Map.get(line2) ?? 0) + 1)
+      const segments = splitCurrentFoodSegments(o.selectedFoodId)
+      segments.forEach((segment, index) => {
+        const line = labelForFoodSegment(menuMap, menu, segment, person, o.foodRemark)
+        if (!line) return
+        const slotMap = slotMaps.get(index) ?? new Map<string, number>()
+        slotMap.set(line, (slotMap.get(line) ?? 0) + 1)
+        slotMaps.set(index, slotMap)
+      })
     }
   }
 
   return [
     ...formatOneSlotSummary(drinkMap, menu),
-    ...formatOneSlotSummary(slot1Map, menu),
-    ...formatOneSlotSummary(slot2Map, menu),
+    ...[...slotMaps.entries()]
+      .sort(([a], [b]) => a - b)
+      .flatMap(([, slotMap]) => formatOneSlotSummary(slotMap, menu)),
   ]
 }
 
@@ -439,31 +488,56 @@ export function BreakfastOrderingApp({
   )
 
   const persistIdsRef = useRef(new Set<string>())
+  const debouncedPersistIdsRef = useRef(new Set<string>())
+  const latestPersonnelRef = useRef(initialPersonnel)
+  const latestOrdersRef = useRef(initialOrders)
+  const latestMealLineDraftsRef = useRef<string[]>([''])
+  const latestSelectedPersonIdRef = useRef(
+    (selectPersonIdOnMount && selectPersonIdOnMount.length > 0
+      ? selectPersonIdOnMount
+      : null) ??
+      initialPersonnel[0]?.id ??
+      '',
+  )
   const [persistTick, setPersistTick] = useState(0)
   const [persistingCount, setPersistingCount] = useState(0)
   const [hasPendingPersist, setHasPendingPersist] = useState(false)
 
-  const schedulePersist = useCallback((userId: string) => {
-    persistIdsRef.current.add(userId)
+  const queuePersistIds = useCallback((ids: string[]) => {
+    let added = false
+    for (const id of ids) {
+      if (!id) continue
+      persistIdsRef.current.add(id)
+      added = true
+    }
+    if (!added) return
     setHasPendingPersist(true)
     setPersistTick((n) => n + 1)
   }, [])
+
+  const schedulePersist = useCallback((userId: string) => {
+    queuePersistIds([userId])
+  }, [queuePersistIds])
 
   const persistDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   )
   const schedulePersistDebounced = useCallback(
     (userId: string, ms = 420) => {
+      if (!userId) return
       if (persistDebounceTimerRef.current) {
         clearTimeout(persistDebounceTimerRef.current)
       }
+      debouncedPersistIdsRef.current.add(userId)
       setHasPendingPersist(true)
       persistDebounceTimerRef.current = setTimeout(() => {
+        const ids = [...debouncedPersistIdsRef.current]
+        debouncedPersistIdsRef.current.clear()
         persistDebounceTimerRef.current = null
-        schedulePersist(userId)
+        queuePersistIds(ids)
       }, ms)
     },
-    [schedulePersist],
+    [queuePersistIds],
   )
 
   useEffect(() => {
@@ -484,6 +558,30 @@ export function BreakfastOrderingApp({
     }
   }, [])
 
+  const persistUserSnapshotNow = useCallback(
+    async (person: Personnel, order: Order | undefined) => {
+      await persistRowsNow([colleagueRowFromPersonnelAndOrder(person, order)])
+    },
+    [persistRowsNow],
+  )
+
+  const getLatestBreakfastState = useCallback(() => {
+    return {
+      personnel: latestPersonnelRef.current,
+      orders: latestOrdersRef.current,
+      selectedPersonId: latestSelectedPersonIdRef.current,
+    }
+  }, [])
+
+  useEffect(() => {
+    latestPersonnelRef.current = personnel
+    latestOrdersRef.current = orders
+  }, [personnel, orders])
+
+  useEffect(() => {
+    latestSelectedPersonIdRef.current = selectedPersonId
+  }, [selectedPersonId])
+
   useEffect(() => {
     if (typeof window === 'undefined') return
     window.localStorage.setItem('budget', budgetInput)
@@ -493,7 +591,10 @@ export function BreakfastOrderingApp({
     const ids = [...persistIdsRef.current]
     persistIdsRef.current.clear()
     if (ids.length === 0) {
-      setHasPendingPersist(persistDebounceTimerRef.current != null)
+      setHasPendingPersist(
+        persistDebounceTimerRef.current != null ||
+          debouncedPersistIdsRef.current.size > 0,
+      )
       return
     }
     void (async () => {
@@ -512,11 +613,40 @@ export function BreakfastOrderingApp({
       } finally {
         setPersistingCount((n) => Math.max(0, n - 1))
         setHasPendingPersist(
-          persistIdsRef.current.size > 0 || persistDebounceTimerRef.current != null,
+          persistIdsRef.current.size > 0 ||
+            persistDebounceTimerRef.current != null ||
+            debouncedPersistIdsRef.current.size > 0,
         )
       }
     })()
   }, [personnel, orders, persistTick])
+
+  useEffect(() => {
+    return () => {
+      if (persistDebounceTimerRef.current) {
+        clearTimeout(persistDebounceTimerRef.current)
+        persistDebounceTimerRef.current = null
+      }
+      const ids = new Set<string>([
+        ...persistIdsRef.current,
+        ...debouncedPersistIdsRef.current,
+      ])
+      persistIdsRef.current.clear()
+      debouncedPersistIdsRef.current.clear()
+      if (ids.size === 0) return
+      const rows = [...ids]
+        .map((id) => {
+          const p = latestPersonnelRef.current.find((x) => x.id === id)
+          const o = latestOrdersRef.current.find((x) => x.userId === id)
+          return p ? colleagueRowFromPersonnelAndOrder(p, o) : null
+        })
+        .filter((r) => r != null)
+      if (rows.length === 0) return
+      void upsertColleagueRows(rows).catch((e) => {
+        console.error(e)
+      })
+    }
+  }, [])
 
   const isPersisting = hasPendingPersist || persistingCount > 0
 
@@ -532,6 +662,15 @@ export function BreakfastOrderingApp({
 
   /** 今日餐點多欄草稿（儲存時拼接為 current_food） */
   const [mealLineDrafts, setMealLineDrafts] = useState<string[]>([''])
+  const mealDraftEditingRef = useRef(false)
+  const mealDraftComposingRef = useRef(false)
+  const previousSelectedPersonIdRef = useRef<string>(
+    (selectPersonIdOnMount && selectPersonIdOnMount.length > 0
+      ? selectPersonIdOnMount
+      : null) ??
+      initialPersonnel[0]?.id ??
+      '',
+  )
   /** 每位同事目前開啟的餐點欄位數；DB 有值時以 split 後數量為準，空白時保留本地操作數 */
   const [mealSlotCounts, setMealSlotCounts] = useState<Record<string, number>>(
     () =>
@@ -543,6 +682,9 @@ export function BreakfastOrderingApp({
         }),
       ),
   )
+  useEffect(() => {
+    latestMealLineDraftsRef.current = mealLineDrafts
+  }, [mealLineDrafts])
   const [foodRemarkDraft, setFoodRemarkDraft] = useState('')
 
   const [spinPhase, setSpinPhase] = useState<'idle' | 'spinning'>('idle')
@@ -692,6 +834,11 @@ export function BreakfastOrderingApp({
   }, [menu, categories, menuMap, schedulePersist])
 
   useEffect(() => {
+    const selectedChanged = previousSelectedPersonIdRef.current !== selectedPersonId
+    previousSelectedPersonIdRef.current = selectedPersonId
+    if (mealDraftEditingRef.current || mealDraftComposingRef.current) {
+      if (!selectedChanged) return
+    }
     const o = orders.find((x) => x.userId === selectedPersonId)
     const slotCount = Math.max(1, mealSlotCounts[selectedPersonId] ?? 1)
     setMealLineDrafts(mealLinesForEditor(o?.selectedFoodId, slotCount))
@@ -746,53 +893,73 @@ export function BreakfastOrderingApp({
     [schedulePersist, schedulePersistDebounced],
   )
 
-  /** 餐點備註（對外）：同步至訂單，供左側列表與店家彙整使用 */
+  /** 餐點備註（對外）：先更新草稿，離焦時再強制寫入資料庫 */
   const onFoodRemarkInputChange = useCallback(
     (e: ChangeEvent<HTMLInputElement>) => {
       const v = e.target.value
-      setFoodRemarkDraft(v)
       if (!selectedPersonId) return
+      const person = personnel.find((x) => x.id === selectedPersonId)
+      const currentOrder = orders.find((o) => o.userId === selectedPersonId)
+      const nextRemark = applyNotToastedRemark(
+        v,
+        currentOrder?.selectedFoodId,
+        person?.isNotToasted,
+        menuMap,
+        menu,
+      )
+      setFoodRemarkDraft(nextRemark ?? '')
       setOrders((prev) =>
         prev.map((o) =>
           o.userId === selectedPersonId
-            ? { ...o, foodRemark: v === '' ? undefined : v }
+            ? { ...o, foodRemark: nextRemark }
             : o,
         ),
       )
       schedulePersistDebounced(selectedPersonId)
     },
-    [selectedPersonId, schedulePersistDebounced],
+    [selectedPersonId, personnel, orders, menuMap, menu, schedulePersistDebounced],
   )
 
   /** 切換備註中的「+蛋」（current_note），並立即寫入以更新金額卡 */
-  const toggleEggRemark = useCallback(() => {
-    if (!selectedPersonId) return
-    const person = personnel.find((x) => x.id === selectedPersonId)
-    if (person?.isAbsent) return
-    const o = orders.find((x) => x.userId === selectedPersonId)
-    if (!o) return
-    const cur = o.foodRemark ?? ''
-    const next = cur.includes(EGG_REMARK_TOKEN)
-      ? cur.split(EGG_REMARK_TOKEN).join('').replace(/\s+/g, ' ').trim()
-      : cur
-        ? `${cur}${EGG_REMARK_TOKEN}`
-        : EGG_REMARK_TOKEN
-    setFoodRemarkDraft(next)
-    setOrders((prev) =>
-      prev.map((row) =>
-        row.userId === selectedPersonId
-          ? { ...row, foodRemark: next === '' ? undefined : next }
-          : row,
-      ),
-    )
-    schedulePersist(selectedPersonId)
-    setEggAmountFlashUserId(selectedPersonId)
-    if (eggFlashTimerRef.current) clearTimeout(eggFlashTimerRef.current)
-    eggFlashTimerRef.current = setTimeout(() => {
-      setEggAmountFlashUserId(null)
-      eggFlashTimerRef.current = null
-    }, 520)
-  }, [selectedPersonId, personnel, orders, schedulePersist])
+  const toggleEggRemark = useCallback(async () => {
+    try {
+      if (!selectedPersonId) return
+      const person = personnel.find((x) => x.id === selectedPersonId)
+      if (!person || person.isAbsent) return
+      const o = orders.find((x) => x.userId === selectedPersonId)
+      if (!o) return
+      const cur = o.foodRemark ?? ''
+      const next = cur.includes(EGG_REMARK_TOKEN)
+        ? cur.split(EGG_REMARK_TOKEN).join('').replace(/\s+/g, ' ').trim()
+        : cur
+          ? `${cur}${EGG_REMARK_TOKEN}`
+          : EGG_REMARK_TOKEN
+      const normalizedRemark = applyNotToastedRemark(
+        next,
+        o.selectedFoodId,
+        person.isNotToasted,
+        menuMap,
+        menu,
+      )
+      const nextOrder = {
+        ...o,
+        foodRemark: normalizedRemark,
+      }
+      await persistUserSnapshotNow(person, nextOrder)
+      setFoodRemarkDraft(normalizedRemark ?? '')
+      setOrders((prev) =>
+        prev.map((row) => (row.userId === selectedPersonId ? nextOrder : row)),
+      )
+      setEggAmountFlashUserId(selectedPersonId)
+      if (eggFlashTimerRef.current) clearTimeout(eggFlashTimerRef.current)
+      eggFlashTimerRef.current = setTimeout(() => {
+        setEggAmountFlashUserId(null)
+        eggFlashTimerRef.current = null
+      }, 520)
+    } catch (err) {
+      console.error('Supabase Error:', err)
+    }
+  }, [selectedPersonId, personnel, orders, persistUserSnapshotNow, menuMap, menu])
 
   const toggleDislikedFood = useCallback(
     (foodId: string) => {
@@ -873,95 +1040,140 @@ export function BreakfastOrderingApp({
   }, [personnel.length, selectedPersonId])
 
   const clearPersonMeal = useCallback(
-    (userId: string) => {
-      setOrders((prev) =>
-        prev.map((o) =>
-          o.userId === userId
-            ? {
-                ...o,
-                selectedFoodId: null,
-                foodRemark: undefined,
-                manualFoodPrice: 0,
-              }
-            : o,
-        ),
-      )
-      setMealSlotCounts((prev) => ({ ...prev, [userId]: 1 }))
-      if (userId === selectedPersonId) {
-        setMealLineDrafts([''])
-        setFoodRemarkDraft('')
+    async (userId: string) => {
+      try {
+        const person = personnel.find((p) => p.id === userId)
+        const order = orders.find((o) => o.userId === userId)
+        if (!person || !order) return
+        const nextOrder = {
+          ...order,
+          selectedFoodId: null,
+          foodRemark: undefined,
+          manualFoodPrice: 0,
+        }
+        await persistUserSnapshotNow(person, nextOrder)
+        setOrders((prev) =>
+          prev.map((o) => (o.userId === userId ? nextOrder : o)),
+        )
+        setMealSlotCounts((prev) => ({ ...prev, [userId]: 1 }))
+        if (userId === selectedPersonId) {
+          setMealLineDrafts([''])
+          setFoodRemarkDraft('')
+        }
+      } catch (err) {
+        console.error('Supabase Error:', err)
       }
-      schedulePersist(userId)
     },
-    [schedulePersist, selectedPersonId],
+    [personnel, orders, persistUserSnapshotNow, selectedPersonId],
   )
 
   /** 將多欄草稿寫入 current_food（與轉盤共用）；全空則清除餐點與餐點備註 */
   const persistMealLines = useCallback(
-    (lines: string[]) => {
-      if (!selectedPersonId) return
-      const p = personnel.find((x) => x.id === selectedPersonId)
-      if (p?.isAbsent) return
-      const joined = joinMealLinesToCurrentFood(lines)
-      const currentOrder = orders.find((row) => row.userId === selectedPersonId)
-      if (joined === null) {
-        const emptyStructure = serializeEmptyMealSlots(lines.length)
-        setOrders((prev) =>
-          prev.map((row) =>
-            row.userId === selectedPersonId
-              ? {
-                  ...row,
-                  selectedFoodId: emptyStructure,
-                  foodRemark: undefined,
-                  manualFoodPrice: 0,
-                }
-              : row,
-          ),
-        )
-        setFoodRemarkDraft('')
-        setMealLineDrafts(emptyMealLines(lines.length))
-        setMealSlotCounts((prev) => ({ ...prev, [selectedPersonId]: lines.length }))
-      } else {
-        const unmatchedSegments = splitCurrentFoodSegments(joined).filter(
-          (segment) => !resolveMealItemFromSegment(segment, menuMap, menu),
-        )
-        const shouldPromptManualPrice =
-          unmatchedSegments.length > 0 &&
-          (currentOrder?.selectedFoodId !== joined ||
-            (currentOrder?.manualFoodPrice ?? 0) <= 0)
-        const nextManualFoodPrice =
-          shouldPromptManualPrice
-            ? promptForManualFoodPrice(
-                unmatchedSegments.join(' + '),
-                currentOrder?.manualFoodPrice ?? 0,
-              )
-            : unmatchedSegments.length > 0
-              ? currentOrder?.manualFoodPrice ?? 0
-              : 0
-        setOrders((prev) =>
-          prev.map((row) =>
-            row.userId === selectedPersonId
-              ? {
-                  ...row,
-                  selectedFoodId: joined,
-                  manualFoodPrice: nextManualFoodPrice,
-                }
-              : row,
-          ),
-        )
-        setMealSlotCounts((prev) => ({
-          ...prev,
-          [selectedPersonId]: splitCurrentFoodSegments(joined).length,
-        }))
+    async (lines: string[]) => {
+      try {
+        if (!selectedPersonId) return
+        const p = personnel.find((x) => x.id === selectedPersonId)
+        if (p?.isAbsent) return
+        const joined = joinMealLinesToCurrentFood(lines)
+        const currentOrder = orders.find((row) => row.userId === selectedPersonId)
+        if (!p || !currentOrder) return
+        if (joined === null) {
+          const emptyStructure = serializeEmptyMealSlots(lines.length)
+          const nextRemark = applyNotToastedRemark(
+            undefined,
+            emptyStructure,
+            p.isNotToasted,
+            menuMap,
+            menu,
+          )
+          const nextOrder = {
+            ...currentOrder,
+            selectedFoodId: emptyStructure,
+            foodRemark: nextRemark,
+            manualFoodPrice: 0,
+          }
+          await persistUserSnapshotNow(p, nextOrder)
+          setOrders((prev) =>
+            prev.map((row) =>
+              row.userId === selectedPersonId ? nextOrder : row,
+            ),
+          )
+          setFoodRemarkDraft(nextRemark ?? '')
+          setMealLineDrafts(emptyMealLines(lines.length))
+          setMealSlotCounts((prev) => ({ ...prev, [selectedPersonId]: lines.length }))
+        } else {
+          const unmatchedSegments = splitCurrentFoodSegments(joined).filter(
+            (segment) => !resolveMealItemFromSegment(segment, menuMap, menu),
+          )
+          const shouldPromptManualPrice =
+            unmatchedSegments.length > 0 &&
+            (currentOrder?.selectedFoodId !== joined ||
+              (currentOrder?.manualFoodPrice ?? 0) <= 0)
+          const nextManualFoodPrice =
+            shouldPromptManualPrice
+              ? promptForManualFoodPrice(
+                  unmatchedSegments.join(' + '),
+                  currentOrder?.manualFoodPrice ?? 0,
+                )
+              : unmatchedSegments.length > 0
+                ? currentOrder?.manualFoodPrice ?? 0
+                : 0
+          const nextOrder = {
+            ...currentOrder,
+            selectedFoodId: joined,
+            foodRemark: applyNotToastedRemark(
+              currentOrder.foodRemark,
+              joined,
+              p.isNotToasted,
+              menuMap,
+              menu,
+            ),
+            manualFoodPrice: nextManualFoodPrice,
+          }
+          await persistUserSnapshotNow(p, nextOrder)
+          setOrders((prev) =>
+            prev.map((row) =>
+              row.userId === selectedPersonId
+                ? nextOrder
+                : row,
+            ),
+          )
+          setMealSlotCounts((prev) => ({
+            ...prev,
+            [selectedPersonId]: splitCurrentFoodSegments(joined).length,
+          }))
+          setFoodRemarkDraft(nextOrder.foodRemark ?? '')
+        }
+      } catch (err) {
+        console.error('Supabase Error:', err)
       }
-      schedulePersist(selectedPersonId)
     },
-    [selectedPersonId, personnel, orders, menuMap, menu, schedulePersist],
+    [selectedPersonId, personnel, orders, menuMap, menu, persistUserSnapshotNow],
   )
 
-  const commitMealLines = useCallback(() => {
-    persistMealLines(mealLineDrafts)
-  }, [mealLineDrafts, persistMealLines])
+  const commitMealLines = useCallback(
+    async (lines?: string[]) => {
+      await persistMealLines(lines ?? latestMealLineDraftsRef.current)
+    },
+    [persistMealLines],
+  )
+
+  const setMealDraftLineValue = useCallback((index: number, value: string) => {
+    setMealLineDrafts((prev) => {
+      const next = replaceMealDraftLine(prev, index, value)
+      latestMealLineDraftsRef.current = next
+      return next
+    })
+  }, [])
+
+  const beginMealDraftEditing = useCallback(() => {
+    mealDraftEditingRef.current = true
+  }, [])
+
+  const endMealDraftEditing = useCallback(() => {
+    mealDraftEditingRef.current = false
+    mealDraftComposingRef.current = false
+  }, [])
 
   const addMealLineRow = useCallback(() => {
     if (!selectedPersonId) return
@@ -993,55 +1205,78 @@ export function BreakfastOrderingApp({
    * 清空所有人非指定套用的餐點，並將全員恢復為出勤（取消休假）。
    */
   const clearAllWheelFoodsGlobally = useCallback(async () => {
-    const nextP = personnel.map((p) => ({ ...p, isAbsent: false }))
-    const nextSlotCounts = Object.fromEntries(
-      nextP.map((p) => [p.id, Math.max(1, mealSlotCounts[p.id] ?? 1)]),
-    ) as Record<string, number>
-    const nextO = orders.map((o) => {
-      const existingSlots = splitCurrentFoodSlots(o.selectedFoodId)
-      const slotCount = Math.max(
-        1,
-        existingSlots.length,
-        nextSlotCounts[o.userId] ?? 1,
-      )
-      const normalizedSlots =
-        existingSlots.length >= slotCount
-          ? existingSlots
-          : [...existingSlots, ...emptyMealLines(slotCount - existingSlots.length)]
-      const keptSlots = normalizedSlots.map((slot) => {
-        const item = resolveMealItemFromSegment(slot, menuMap, menu)
-        return item ? '' : slot.trim()
-      })
-      const hasManualMeal = keptSlots.some(Boolean)
-      return {
-        ...o,
-        selectedFoodId: joinMealSlotsPreservingStructure(keptSlots),
-        foodRemark: hasManualMeal ? o.foodRemark : undefined,
-        manualFoodPrice: hasManualMeal ? o.manualFoodPrice ?? 0 : 0,
+    try {
+      const {
+        personnel: currentPersonnel,
+        orders: currentOrders,
+        selectedPersonId: currentSelectedPersonId,
+      } = getLatestBreakfastState()
+      const targets = currentPersonnel.filter((p) => p.isFixedMeal !== true)
+      const currentIds = new Set(currentPersonnel.map((p) => p.id))
+      const targetIds = new Set(targets.map((p) => p.id))
+      const nextSlotCounts = Object.fromEntries(
+        currentPersonnel.map((p) => [p.id, Math.max(1, mealSlotCounts[p.id] ?? 1)]),
+      ) as Record<string, number>
+      const idsToBulkClear: string[] = []
+      const nextO = currentOrders
+        .filter((o) => currentIds.has(o.userId))
+        .map((o) => {
+          if (targetIds.has(o.userId)) {
+            idsToBulkClear.push(o.userId)
+            nextSlotCounts[o.userId] = 1
+            return {
+              ...o,
+              selectedFoodId: '',
+              foodRemark: undefined,
+              manualFoodPrice: 0,
+            }
+          }
+          return o
+        })
+      if (idsToBulkClear.length === 0) return
+      setPersistingCount((n) => n + 1)
+      try {
+        await bulkClearBreakfastFieldsByIds(idsToBulkClear)
+      } finally {
+        setPersistingCount((n) => Math.max(0, n - 1))
       }
-    })
-    setPersonnel(nextP)
-    setOrders(nextO)
-    setMealSlotCounts(nextSlotCounts)
-    setMealLineDrafts(
-      mealLinesForEditor(
-        nextO.find((o) => o.userId === selectedPersonId)?.selectedFoodId,
-        Math.max(1, nextSlotCounts[selectedPersonId] ?? 1),
-      ),
-    )
-    await persistRowsNow(
-      nextO.map((o) => {
-        const p = nextP.find((x) => x.id === o.userId)!
-        return colleagueRowFromPersonnelAndOrder(p, o)
-      }),
-    )
-  }, [personnel, orders, mealSlotCounts, selectedPersonId, menuMap, menu, persistRowsNow])
+      setOrders((prev) =>
+        prev.map((o) => nextO.find((next) => next.userId === o.userId) ?? o),
+      )
+      latestOrdersRef.current = latestOrdersRef.current.map(
+        (o) => nextO.find((next) => next.userId === o.userId) ?? o,
+      )
+      setMealSlotCounts(nextSlotCounts)
+      setMealLineDrafts(
+        mealLinesForEditor(
+          nextO.find((o) => o.userId === currentSelectedPersonId)?.selectedFoodId,
+          Math.max(1, nextSlotCounts[currentSelectedPersonId] ?? 1),
+        ),
+      )
+      if (currentSelectedPersonId) {
+        const selectedNextOrder = nextO.find((o) => o.userId === currentSelectedPersonId)
+        setFoodRemarkDraft(selectedNextOrder?.foodRemark ?? '')
+      }
+    } catch (err) {
+      console.error('Supabase Error:', err)
+    }
+  }, [getLatestBreakfastState, mealSlotCounts])
 
   /**
    * 一鍵全員轉盤：略過休假；僅對 current_food 為空者抽籤，寫入品項顯示名稱（與手動輸入同欄）。
-   * (不烤) 由顯示層依品項類別與勾選自動加註。
+   * 若勾選吐司不烤且餐點包含吐司，會同步把不烤寫入備註。
    */
   const batchSpinAll = useCallback(async () => {
+    try {
+    const {
+      personnel: currentPersonnel,
+      orders: currentOrders,
+      selectedPersonId: currentSelectedPersonId,
+    } = getLatestBreakfastState()
+    const targets = currentPersonnel.filter(
+      (p) => p.isFixedMeal !== true && !p.isAbsent,
+    )
+    const targetIds = new Set(targets.map((p) => p.id))
     spinSessionIdRef.current += 1
     if (spinRafRef.current != null) {
       cancelAnimationFrame(spinRafRef.current)
@@ -1052,9 +1287,10 @@ export function BreakfastOrderingApp({
     setLastSpinFoodId(null)
     setCelebratePick(false)
 
-    const nextO = orders.map((o) => {
-      const p = personnel.find((x) => x.id === o.userId)
-      if (!p || p.isAbsent) return o
+    const nextO = currentOrders.map((o) => {
+      if (!targetIds.has(o.userId)) return o
+      const p = currentPersonnel.find((x) => x.id === o.userId)
+      if (!p) return o
       if (!foodLineIsEmpty(o.selectedFoodId)) return o
       const slotCount = Math.max(1, mealSlotCounts[o.userId] ?? 1)
 
@@ -1074,7 +1310,13 @@ export function BreakfastOrderingApp({
         return {
           ...o,
           selectedFoodId: serializeEmptyMealSlots(slotCount),
-          foodRemark: undefined,
+          foodRemark: applyNotToastedRemark(
+            undefined,
+            serializeEmptyMealSlots(slotCount),
+            p.isNotToasted,
+            menuMap,
+            menu,
+          ),
           manualFoodPrice: 0,
         }
       }
@@ -1083,32 +1325,97 @@ export function BreakfastOrderingApp({
       return {
         ...o,
         selectedFoodId: labels.join(' + '),
-        foodRemark: undefined,
+        foodRemark: applyNotToastedRemark(
+          undefined,
+          labels.join(' + '),
+          p.isNotToasted,
+          menuMap,
+          menu,
+        ),
         manualFoodPrice: 0,
       }
     })
+    const changedRows = nextO
+      .map((o, index) => {
+        const prev = currentOrders[index]
+        if (
+          prev?.userId === o.userId &&
+          prev?.selectedFoodId === o.selectedFoodId &&
+          prev?.foodRemark === o.foodRemark &&
+          (prev?.manualFoodPrice ?? 0) === (o.manualFoodPrice ?? 0)
+        ) {
+          return null
+        }
+        const p = currentPersonnel.find((x) => x.id === o.userId)
+        return p ? colleagueRowFromPersonnelAndOrder(p, o) : null
+      })
+      .filter((r) => r != null)
+    await persistRowsNow(changedRows)
     setOrders(nextO)
-    await persistRowsNow(
-      nextO
-        .map((o) => {
-          const p = personnel.find((x) => x.id === o.userId)
-          return p ? colleagueRowFromPersonnelAndOrder(p, o) : null
-        })
-        .filter((r) => r != null),
-    )
-  }, [personnel, menu, menuMap, globalBudget, orders, mealSlotCounts, persistRowsNow])
+    latestOrdersRef.current = nextO
+    if (currentSelectedPersonId) {
+      const selectedNextOrder = nextO.find((o) => o.userId === currentSelectedPersonId)
+      if (selectedNextOrder) {
+        setMealLineDrafts(
+          mealLinesForEditor(
+            selectedNextOrder.selectedFoodId,
+            Math.max(1, mealSlotCounts[currentSelectedPersonId] ?? 1),
+          ),
+        )
+        setFoodRemarkDraft(selectedNextOrder.foodRemark ?? '')
+      }
+    }
+    } catch (error) {
+      console.error(error)
+    }
+  }, [getLatestBreakfastState, menu, menuMap, globalBudget, mealSlotCounts, persistRowsNow])
 
-  const startWheel = useCallback(() => {
-    if (!selectedPersonId || wheelCandidates.length === 0) return
-    const co = orders.find((o) => o.userId === selectedPersonId)
+  const startWheel = useCallback(async () => {
+    try {
+    const {
+      personnel: currentPersonnel,
+      orders: currentOrders,
+      selectedPersonId: currentSelectedPersonId,
+    } = getLatestBreakfastState()
+    if (!currentSelectedPersonId || wheelCandidates.length === 0) return
+    const targets = currentPersonnel.filter((p) => p.isFixedMeal !== true)
+    const targetIds = new Set(targets.map((p) => p.id))
+    if (!targetIds.has(currentSelectedPersonId)) return
+    const co = currentOrders.find((o) => o.userId === currentSelectedPersonId)
     if (co && !foodLineIsEmpty(co.selectedFoodId)) return
-    const p = personnel.find((x) => x.id === selectedPersonId)
-    if (!p || p.isAbsent) return
+    const p = currentPersonnel.find((x) => x.id === currentSelectedPersonId)
+    if (!p || p.isAbsent || p.isFixedMeal) return
 
     const pool = wheelCandidates
     const n = pool.length
     const pickIdx = Math.floor(Math.random() * n)
     const pick = pool[pickIdx]
+    const slotCount = Math.max(
+      1,
+      mealLineDrafts.length,
+      mealSlotCounts[currentSelectedPersonId] ?? 1,
+    )
+    const labels = pickDistinctMealLabelsForPerson(pool, p, slotCount)
+    const mealLabel = labels.join(' + ')
+    const nextOrderForPersist: Order = {
+      ...(currentOrders.find((o) => o.userId === currentSelectedPersonId) ?? {
+        userId: currentSelectedPersonId,
+        selectedDrinkId: p.fixedDrinkId ?? null,
+        selectedFoodId: mealLabel,
+        foodRemark: undefined,
+        manualFoodPrice: 0,
+      }),
+      selectedFoodId: mealLabel,
+      foodRemark: applyNotToastedRemark(
+        undefined,
+        mealLabel,
+        p.isNotToasted,
+        menuMap,
+        menu,
+      ),
+      manualFoodPrice: 0,
+    }
+    const persistPromise = persistUserSnapshotNow(p, nextOrderForPersist)
 
     spinSessionIdRef.current += 1
     const session = spinSessionIdRef.current
@@ -1145,51 +1452,43 @@ export function BreakfastOrderingApp({
       }
 
       setShufflePreviewId(pick.id)
-      const slotCount = Math.max(
-        1,
-        mealLineDrafts.length,
-        mealSlotCounts[selectedPersonId] ?? 1,
-      )
-      const labels = pickDistinctMealLabelsForPerson(pool, p, slotCount)
-      const mealLabel = labels.join(' + ')
-      setOrders((prev) =>
-        prev.map((o) =>
-          o.userId === selectedPersonId
-            ? {
-                ...o,
-                selectedFoodId: mealLabel,
-                foodRemark: undefined,
-                manualFoodPrice: 0,
-              }
-            : o,
-        ),
-      )
-      void persistRowsNow([colleagueRowFromPersonnelAndOrder(p, {
-        ...(orders.find((o) => o.userId === selectedPersonId) ?? {
-          userId: selectedPersonId,
-          selectedDrinkId: p.fixedDrinkId ?? null,
-          selectedFoodId: mealLabel,
-          foodRemark: undefined,
-          manualFoodPrice: 0,
-        }),
-        selectedFoodId: mealLabel,
-        foodRemark: undefined,
-        manualFoodPrice: 0,
-      })])
-      setLastSpinFoodId(pick.id)
-      setSpinPhase('idle')
-      setCelebratePick(true)
-      window.setTimeout(() => setCelebratePick(false), 1400)
+      void persistPromise
+        .then(() => {
+          setOrders((prev) =>
+            prev.map((o) =>
+              o.userId === currentSelectedPersonId ? nextOrderForPersist : o,
+            ),
+          )
+          latestOrdersRef.current = latestOrdersRef.current.map((o) =>
+            o.userId === currentSelectedPersonId ? nextOrderForPersist : o,
+          )
+          setMealLineDrafts(mealLinesForEditor(mealLabel, slotCount))
+          setFoodRemarkDraft('')
+          setLastSpinFoodId(pick.id)
+          setSpinPhase('idle')
+          setCelebratePick(true)
+          window.setTimeout(() => setCelebratePick(false), 1400)
+        })
+        .catch((e) => {
+          console.error(e)
+          setSpinPhase('idle')
+          setShufflePreviewId(null)
+          setCelebratePick(false)
+        })
       spinRafRef.current = null
     }
 
     spinRafRef.current = requestAnimationFrame(run)
+    } catch (error) {
+      console.error(error)
+      setSpinPhase('idle')
+      setShufflePreviewId(null)
+      setCelebratePick(false)
+    }
   }, [
-    selectedPersonId,
+    getLatestBreakfastState,
     wheelCandidates,
-    personnel,
-    persistRowsNow,
-    orders,
+    persistUserSnapshotNow,
     mealLineDrafts.length,
     mealSlotCounts,
   ])
@@ -1219,7 +1518,9 @@ export function BreakfastOrderingApp({
       setOrders(nextOrders)
       const p = nextPersonnel.find((x) => x.id === id)!
       const o = nextOrders.find((x) => x.userId === id)
-      void persistRowsNow([colleagueRowFromPersonnelAndOrder(p, o)])
+      void persistRowsNow([colleagueRowFromPersonnelAndOrder(p, o)]).catch((err) => {
+        console.error('Supabase Error:', err)
+      })
     },
     [personnel, orders, persistRowsNow],
   )
@@ -1292,7 +1593,7 @@ export function BreakfastOrderingApp({
       if (onColleaguesSynced) {
         await onColleaguesSynced({ newPersonId: id })
       } else {
-        const p: Personnel = {
+      const p: Personnel = {
           id,
           orderIndex: nextOrderIndex,
           name: displayName,
@@ -1300,7 +1601,8 @@ export function BreakfastOrderingApp({
           dislikedFoodIds: [],
           extraRemark: undefined,
           drinkRemark: '',
-          requiresUntoastedToast: false,
+          isFixedMeal: false,
+          isNotToasted: false,
           isAbsent: false,
         }
         const o: Order = {
@@ -1666,7 +1968,7 @@ export function BreakfastOrderingApp({
                   )}
                 </div>
                 <p className="mt-2 text-sm text-amber-900/55 sm:text-base">
-                  逐行顯示，可直接複製；若同事有勾選「吐司類一律不烤」且點吐司，總結中會出現
+                  逐行顯示，可直接複製；若同事有勾選「吐司不烤」且點吐司，總結中會自動帶出
                   (不烤)。
                 </p>
               </div>
@@ -1751,6 +2053,7 @@ export function BreakfastOrderingApp({
                     onChange={(e) =>
                       patchPersonnel(selectedPersonId, { name: e.target.value })
                     }
+                    onBlur={() => schedulePersist(selectedPersonId)}
                     className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none ring-amber-400/30 focus:ring-2"
                   />
                 </label>
@@ -1778,9 +2081,45 @@ export function BreakfastOrderingApp({
 
               <div className="mt-3 border-t border-amber-100/80 pt-3">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                  <p className="text-xs font-medium text-slate-700">
-                    今日餐點（與轉盤共用）
-                  </p>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <p className="text-xs font-medium text-slate-700">
+                      今日餐點（與轉盤共用）
+                    </p>
+                    <label className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-600">
+                      <input
+                        type="checkbox"
+                        checked={!!selectedPerson.isFixedMeal}
+                        onChange={async (e) => {
+                          const nextChecked = e.target.checked
+                          try {
+                            await updateColleagueFixedMealStatus(
+                              selectedPersonId,
+                              nextChecked,
+                            )
+                            setPersonnel((prev) =>
+                              prev.map((p) => {
+                                const next =
+                                  p.id === selectedPersonId
+                                    ? { ...p, isFixedMeal: nextChecked }
+                                    : p
+                                return next
+                              }),
+                            )
+                            latestPersonnelRef.current = latestPersonnelRef.current.map(
+                              (p) =>
+                                p.id === selectedPersonId
+                                  ? { ...p, isFixedMeal: nextChecked }
+                                  : p,
+                            )
+                          } catch (error) {
+                            console.error(error)
+                          }
+                        }}
+                        className="size-3.5 rounded border-slate-300"
+                      />
+                      固定餐點
+                    </label>
+                  </div>
                   <button
                     type="button"
                     disabled={!!selectedPerson.isAbsent}
@@ -1802,18 +2141,38 @@ export function BreakfastOrderingApp({
                         </span>
                         <input
                           type="text"
-                          value={line}
+                          value={line ?? ''}
+                          onFocus={() => beginMealDraftEditing()}
                           onChange={(e) => {
-                            const v = e.target.value
-                            setMealLineDrafts((prev) =>
-                              prev.map((x, j) => (j === i ? v : x)),
-                            )
+                            setMealDraftLineValue(i, e.target.value)
                           }}
-                          onBlur={() => commitMealLines()}
+                          onCompositionStart={() => {
+                            mealDraftComposingRef.current = true
+                          }}
+                          onCompositionEnd={() => {
+                            mealDraftComposingRef.current = false
+                          }}
+                          onBlur={(e) => {
+                            const nextLines = replaceMealDraftLine(
+                              latestMealLineDraftsRef.current,
+                              i,
+                              e.currentTarget.value,
+                            )
+                            latestMealLineDraftsRef.current = nextLines
+                            setMealLineDrafts(nextLines)
+                            endMealDraftEditing()
+                            void commitMealLines(nextLines)
+                          }}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter') {
+                              if (
+                                mealDraftComposingRef.current ||
+                                (e.nativeEvent as KeyboardEvent).isComposing
+                              ) {
+                                return
+                              }
                               e.preventDefault()
-                              ;(e.target as HTMLInputElement).blur()
+                              ;(e.currentTarget as HTMLInputElement).blur()
                             }
                           }}
                           disabled={!!selectedPerson.isAbsent}
@@ -1859,19 +2218,53 @@ export function BreakfastOrderingApp({
               <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-amber-100/80 pt-3">
                 <label
                   className="flex cursor-pointer items-center gap-2 text-sm font-medium text-slate-800"
-                  title="點選吐司類餐點時，名稱後自動加上 (不烤)"
+                  title="勾選後，餐點包含吐司時會自動在備註加入不烤"
                 >
                   <input
                     type="checkbox"
-                    checked={selectedPerson.requiresUntoastedToast ?? false}
-                    onChange={(e) =>
-                      patchPersonnel(selectedPersonId, {
-                        requiresUntoastedToast: e.target.checked,
-                      })
-                    }
+                    checked={selectedPerson.isNotToasted ?? false}
+                    onChange={async (e) => {
+                      try {
+                        const nextChecked = e.target.checked
+                        const nextPerson = {
+                          ...selectedPerson,
+                          isNotToasted: nextChecked,
+                        }
+                        const nextOrder = {
+                          ...currentOrder,
+                          foodRemark: applyNotToastedRemark(
+                            currentOrder.foodRemark ?? foodRemarkDraft,
+                            currentOrder.selectedFoodId,
+                            nextChecked,
+                            menuMap,
+                            menu,
+                          ),
+                        }
+                        await persistUserSnapshotNow(nextPerson, nextOrder)
+                        setPersonnel((prev) =>
+                          prev.map((p) =>
+                            p.id === selectedPersonId ? nextPerson : p,
+                          ),
+                        )
+                        latestPersonnelRef.current = latestPersonnelRef.current.map((p) =>
+                          p.id === selectedPersonId ? nextPerson : p,
+                        )
+                        setOrders((prev) =>
+                          prev.map((o) =>
+                            o.userId === selectedPersonId ? nextOrder : o,
+                          ),
+                        )
+                        latestOrdersRef.current = latestOrdersRef.current.map((o) =>
+                          o.userId === selectedPersonId ? nextOrder : o,
+                        )
+                        setFoodRemarkDraft(nextOrder.foodRemark ?? '')
+                      } catch (err) {
+                        console.error('Supabase Error:', err)
+                      }
+                    }}
                     className="rounded border-slate-300"
                   />
-                  吐司類一律不烤
+                  吐司不烤
                 </label>
                 <button
                   type="button"
@@ -1892,6 +2285,35 @@ export function BreakfastOrderingApp({
                       type="text"
                       value={foodRemarkDraft}
                       onChange={onFoodRemarkInputChange}
+                      onBlur={() => {
+                        void (async () => {
+                          const person = personnel.find((x) => x.id === selectedPersonId)
+                          const order = orders.find((x) => x.userId === selectedPersonId)
+                          if (!person || !order) return
+                          const nextRemark = applyNotToastedRemark(
+                            foodRemarkDraft,
+                            order.selectedFoodId,
+                            person.isNotToasted,
+                            menuMap,
+                            menu,
+                          )
+                          await persistUserSnapshotNow(person, {
+                            ...order,
+                            foodRemark: nextRemark,
+                          })
+                          setOrders((prev) =>
+                            prev.map((row) =>
+                              row.userId === selectedPersonId
+                                ? {
+                                    ...row,
+                                    foodRemark: nextRemark,
+                                  }
+                                : row,
+                            ),
+                          )
+                          setFoodRemarkDraft(nextRemark ?? '')
+                        })()
+                      }}
                       placeholder="例如：不加美乃滋"
                       autoComplete="off"
                       className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm outline-none ring-amber-400/30 focus:ring-2"
@@ -1901,7 +2323,7 @@ export function BreakfastOrderingApp({
                     type="button"
                     disabled={!!selectedPerson.isAbsent}
                     aria-pressed={foodRemarkDraft.includes(EGG_REMARK_TOKEN)}
-                    onClick={() => toggleEggRemark()}
+                    onClick={() => void toggleEggRemark()}
                     title={`切換備註「${EGG_REMARK_TOKEN}」（總價 ${EGG_EXTRA_PRICE} 元）`}
                     className={`mt-1 shrink-0 rounded-lg border px-3 py-2 text-sm font-bold tabular-nums shadow-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 sm:mt-0 sm:min-h-[2.125rem] ${
                       foodRemarkDraft.includes(EGG_REMARK_TOKEN)
@@ -1939,6 +2361,7 @@ export function BreakfastOrderingApp({
                           e.target.value === '' ? undefined : e.target.value,
                       })
                     }
+                    onBlur={() => schedulePersist(selectedPersonId)}
                     placeholder="僅此處可見，不列入列表與彙整"
                     autoComplete="off"
                     className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-sm outline-none ring-amber-400/30 focus:ring-2"

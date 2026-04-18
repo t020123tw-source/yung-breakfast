@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { MenuCategoryDef, MenuItem } from './data/menuData'
 import { BreakfastOrderingApp } from './components/BreakfastOrderingApp'
 import { MenuManagementPanel } from './components/MenuManagementPanel'
@@ -54,27 +54,32 @@ function App() {
   const [orderOrders, setOrderOrders] = useState<Order[]>([])
   const [otherStoreEntries, setOtherStoreEntries] = useState<OtherStoreEntry[]>([])
   const [orderDataKey, setOrderDataKey] = useState(0)
+  const orderLoadRequestIdRef = useRef(0)
   /** 新增同事並 refetch 後，讓點餐頁選中該員 */
   const [selectPersonIdOnMount, setSelectPersonIdOnMount] = useState<
     string | undefined
   >(undefined)
 
   const loadOrderTabData = useCallback(async () => {
+    const requestId = ++orderLoadRequestIdRef.current
     const [{ categories: c, menu: m }, col] = await Promise.all([
       fetchMenuItems(),
       fetchColleaguesFromSupabase(),
     ])
+    if (requestId !== orderLoadRequestIdRef.current) return false
     setCategories(c)
     setMenu(m)
     setOrderPersonnel(col.personnel)
     setOrderOrders(col.orders)
     setOtherStoreEntries(col.otherStoreEntries)
+    return true
   }, [])
 
   const handleColleaguesSynced = useCallback(
     async (opts: { newPersonId: string }) => {
       setSelectPersonIdOnMount(opts.newPersonId)
-      await loadOrderTabData()
+      const applied = await loadOrderTabData()
+      if (!applied) return
       setOrderDataKey((k) => k + 1)
       window.setTimeout(() => setSelectPersonIdOnMount(undefined), 0)
     },
@@ -111,8 +116,8 @@ function App() {
     setOrderTabError(null)
     void (async () => {
       try {
-        await loadOrderTabData()
-        if (cancelled) return
+        const applied = await loadOrderTabData()
+        if (cancelled || !applied) return
         setOrderDataKey((k) => k + 1)
       } catch (e) {
         if (cancelled) return
