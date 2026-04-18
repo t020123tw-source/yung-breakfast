@@ -96,6 +96,30 @@ export async function deleteMenuItemById(id: string): Promise<void> {
   if (error) throw error
 }
 
+export async function updateMenuItemById(args: {
+  id: string
+  name: string
+  price: number
+}): Promise<void> {
+  const id = String(args.id ?? '').trim()
+  const name = String(args.name ?? '').trim()
+  const priceNum = Number(args.price)
+  const priceInt = Number.isFinite(priceNum)
+    ? Math.min(999999, Math.max(0, Math.round(priceNum)))
+    : 0
+  if (!id) throw new Error('餐點 ID 不可為空')
+  if (!name) throw new Error('餐點名稱不可為空')
+
+  const { error } = await supabase
+    .from('menu_items')
+    .update({
+      name,
+      price: priceInt,
+    })
+    .eq('id', id)
+  if (error) throw error
+}
+
 export async function deleteMenuItemsByCategoryName(
   categoryName: string,
 ): Promise<void> {

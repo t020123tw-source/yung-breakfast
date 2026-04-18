@@ -73,6 +73,11 @@ function splitCurrentFoodSegments(raw: string | null | undefined): string[] {
   return s.split('+').map((item) => item.trim()).filter(Boolean)
 }
 
+function splitCurrentFoodSlots(raw: string | null | undefined): string[] {
+  if (typeof raw !== 'string' || raw.trim() === '') return []
+  return raw.split('+').map((item) => item.trim())
+}
+
 function mealSlotCountFromCurrentFood(raw: string | null | undefined): number {
   const segments = splitCurrentFoodSegments(raw)
   if (raw == null) return 1
@@ -294,48 +299,36 @@ function buildFoodLineForShop(
   return label
 }
 
-function formatSlotSummaryParts(slotMaps: Map<string, number>[]): string[] {
-  const parts: string[] = []
-  for (const slotMap of slotMaps) {
-    const entries = [...slotMap.entries()].sort(([a], [b]) =>
-      a.localeCompare(b, 'zh-Hant'),
-    )
-    for (const [label, count] of entries) {
-      parts.push(`${label} x ${count}`)
-    }
-  }
-  return parts
+function formatOneSlotSummary(slotMap: Map<string, number>): string[] {
+  return [...slotMap.entries()]
+    .sort(([a], [b]) => a.localeCompare(b, 'zh-Hant'))
+    .map(([label, count]) => `${label} x ${count}`)
 }
 
-/** 產生單行純文字總結（不含表格） */
-function buildShopSummaryLine(
+function buildShopSummaryLines(
   menuMap: Map<string, MenuItem>,
   menu: MenuItem[],
   orders: Order[],
   personnel: Personnel[],
-): string {
-  const slotMaps: Map<string, number>[] = []
+): string[] {
+  const slot1Map = new Map<string, number>()
+  const slot2Map = new Map<string, number>()
 
   for (const o of orders) {
     const person = personnel.find((p) => p.id === o.userId)
     if (person?.isAbsent) continue
     if (o.selectedFoodId?.trim()) {
-      const raw = o.selectedFoodId.trim()
-      const segments = splitCurrentFoodSegments(raw)
-      for (let idx = 0; idx < segments.length; idx++) {
-        const seg = segments[idx]
-        const line = labelForFoodSegment(menuMap, menu, seg, person)
-        if (line) {
-          if (!slotMaps[idx]) slotMaps[idx] = new Map<string, number>()
-          const slotMap = slotMaps[idx]
-          slotMap.set(line, (slotMap.get(line) ?? 0) + 1)
-        }
-      }
+      const slots = splitCurrentFoodSlots(o.selectedFoodId)
+      const slot1 = slots[0] ?? ''
+      const slot2 = slots[1] ?? ''
+      const line1 = labelForFoodSegment(menuMap, menu, slot1, person)
+      const line2 = labelForFoodSegment(menuMap, menu, slot2, person)
+      if (line1) slot1Map.set(line1, (slot1Map.get(line1) ?? 0) + 1)
+      if (line2) slot2Map.set(line2, (slot2Map.get(line2) ?? 0) + 1)
     }
   }
 
-  const parts = formatSlotSummaryParts(slotMaps)
-  return parts.length > 0 ? `總結：${parts.join('、')}` : '總結：（尚無品項）'
+  return [...formatOneSlotSummary(slot1Map), ...formatOneSlotSummary(slot2Map)]
 }
 
 export function BreakfastOrderingApp({
@@ -1148,8 +1141,8 @@ export function BreakfastOrderingApp({
     }
   }, [addColleagueBusy, newColleagueName, onColleaguesSynced, personnel])
 
-  const shopSummaryLine = useMemo(
-    () => buildShopSummaryLine(menuMap, menu, orders, personnel),
+  const shopSummaryLines = useMemo(
+    () => buildShopSummaryLines(menuMap, menu, orders, personnel),
     [menuMap, menu, orders, personnel],
   )
 
@@ -1468,11 +1461,17 @@ export function BreakfastOrderingApp({
                 <h3 className="text-base font-bold text-amber-950 sm:text-lg">
                   店家點餐彙整（餐點統計明細）
                 </h3>
-                <p className="mt-2 select-all text-xl leading-relaxed text-black sm:text-2xl">
-                  {shopSummaryLine}
-                </p>
+                <div className="mt-2 select-all text-xl leading-relaxed text-black sm:text-2xl">
+                  {shopSummaryLines.length > 0 ? (
+                    shopSummaryLines.map((line) => (
+                      <div key={line}>{line}</div>
+                    ))
+                  ) : (
+                    <div>（尚無品項）</div>
+                  )}
+                </div>
                 <p className="mt-2 text-sm text-amber-900/55 sm:text-base">
-                  純文字一行，可直接複製；若同事有勾選「吐司類一律不烤」且點吐司，總結中會出現
+                  逐行顯示，可直接複製；若同事有勾選「吐司類一律不烤」且點吐司，總結中會出現
                   (不烤)。
                 </p>
               </div>

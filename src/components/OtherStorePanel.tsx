@@ -18,14 +18,6 @@ function normalizeFoodCellText(raw: unknown): string {
   return raw.trim()
 }
 
-function splitOtherFoodsForSummary(raw: unknown): string[] {
-  if (typeof raw !== 'string') return []
-  return raw
-    .split(' + ')
-    .map((item) => item.trim())
-    .filter(Boolean)
-}
-
 function otherFoodsForInputs(raw: unknown): [string, string] {
   if (typeof raw !== 'string' || raw === '') return ['', '']
   const parsed = raw.split(' + ')
@@ -40,17 +32,10 @@ function joinOtherFoodsForSave(parts: [string, string]): string {
   return `${food1} + ${food2}`
 }
 
-function formatSlotSummary(slotMaps: Map<string, number>[]): string {
-  const parts: string[] = []
-  for (const slotMap of slotMaps) {
-    const entries = [...slotMap.entries()].sort(([a], [b]) =>
-      a.localeCompare(b, 'zh-Hant'),
-    )
-    for (const [food, count] of entries) {
-      parts.push(`${food} x ${count}`)
-    }
-  }
-  return parts.join('、')
+function formatOneSlotSummary(slotMap: Map<string, number>): string[] {
+  return [...slotMap.entries()]
+    .sort(([a], [b]) => a.localeCompare(b, 'zh-Hant'))
+    .map(([food, count]) => `${food} x ${count}`)
 }
 
 function AbsentSlotIcon() {
@@ -206,27 +191,28 @@ export function OtherStorePanel({
   }, [clearPendingSaves, drafts, personnel])
 
   const summary = useMemo(() => {
-    const slotFoodCounts = [new Map<string, number>(), new Map<string, number>()]
+    const slot1Map = new Map<string, number>()
+    const slot2Map = new Map<string, number>()
     let totalPrice = 0
     for (const p of personnel) {
       const draft = drafts[p.id]
       if (draft?.otherIsOnLeave) continue
       const priceText = (draft?.otherPrice ?? '').trim()
-      const foods = splitOtherFoodsForSummary(joinOtherFoodsForSave(draft?.otherFoods ?? ['', '']))
-      for (let idx = 0; idx < foods.length; idx++) {
-        const food = foods[idx]
-        if (!food) continue
-        const slotMap = slotFoodCounts[idx]
-        if (!slotMap) continue
-        slotMap.set(food, (slotMap.get(food) ?? 0) + 1)
-      }
+      const [slot1, slot2] = draft?.otherFoods ?? ['', '']
+      const food1 = slot1.trim()
+      const food2 = slot2.trim()
+      if (food1) slot1Map.set(food1, (slot1Map.get(food1) ?? 0) + 1)
+      if (food2) slot2Map.set(food2, (slot2Map.get(food2) ?? 0) + 1)
       if (priceText !== '') {
         const n = Number(priceText)
         if (Number.isFinite(n)) totalPrice += n
       }
     }
-    const foodSummary = formatSlotSummary(slotFoodCounts) || '（尚無品項）'
-    return { foodSummary, totalPrice }
+    const foodSummaryLines = [
+      ...formatOneSlotSummary(slot1Map),
+      ...formatOneSlotSummary(slot2Map),
+    ]
+    return { foodSummaryLines, totalPrice }
   }, [personnel, drafts])
 
   return (
@@ -400,9 +386,15 @@ export function OtherStorePanel({
             <h3 className="text-base font-bold text-amber-950 sm:text-lg">
               店家點餐彙整
             </h3>
-            <p className="mt-2 select-all text-lg leading-relaxed text-black sm:text-xl">
-              {summary.foodSummary}
-            </p>
+            <div className="mt-2 select-all text-lg leading-relaxed text-black sm:text-xl">
+              {summary.foodSummaryLines.length > 0 ? (
+                summary.foodSummaryLines.map((line) => (
+                  <div key={line}>{line}</div>
+                ))
+              ) : (
+                <div>（尚無品項）</div>
+              )}
+            </div>
             <p className="mt-2 text-lg font-bold text-amber-950 sm:text-xl">
               總金額：$ {summary.totalPrice}
             </p>

@@ -42,6 +42,7 @@ type Props = {
   }) => Promise<void>
   onRemoveItem: (itemId: string) => Promise<void>
   onRemoveCategory: (categoryId: string) => Promise<void>
+  onUpdateItem: (args: { id: string; name: string; price: number }) => Promise<void>
 }
 
 function categoryEmoji(c: MenuCategoryDef): string {
@@ -55,6 +56,7 @@ export function MenuManagementPanel({
   onAddItem,
   onRemoveItem,
   onRemoveCategory,
+  onUpdateItem,
 }: Props) {
   const [itemName, setItemName] = useState('')
   const [itemPrice, setItemPrice] = useState('30')
@@ -62,6 +64,10 @@ export function MenuManagementPanel({
   const [categoryInput, setCategoryInput] = useState('')
   const [saving, setSaving] = useState(false)
   const [addError, setAddError] = useState<string | null>(null)
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editingName, setEditingName] = useState('')
+  const [editingPrice, setEditingPrice] = useState('')
+  const [editError, setEditError] = useState<string | null>(null)
   const didInitCategoryRef = useRef(false)
 
   /** 由 menu 內品項提取不重複類別（無獨立 categories 表） */
@@ -156,6 +162,52 @@ export function MenuManagementPanel({
     [onRemoveItem, saving],
   )
 
+  const startEditingItem = useCallback(
+    (item: MenuItem) => {
+      if (saving) return
+      setEditingId(item.id)
+      setEditingName(item.name)
+      setEditingPrice(String(item.price))
+      setEditError(null)
+    },
+    [saving],
+  )
+
+  const cancelEditing = useCallback(() => {
+    setEditingId(null)
+    setEditingName('')
+    setEditingPrice('')
+    setEditError(null)
+  }, [])
+
+  const saveEditingItem = useCallback(async () => {
+    if (saving || !editingId) return
+    const name = editingName.trim()
+    if (!name) {
+      setEditError('餐點名稱不可為空')
+      return
+    }
+    const price = Math.max(
+      0,
+      Math.min(999999, parseInt(editingPrice.replace(/\D/g, ''), 10) || 0),
+    )
+    setSaving(true)
+    setEditError(null)
+    try {
+      await onUpdateItem({
+        id: editingId,
+        name,
+        price,
+      })
+      cancelEditing()
+    } catch (e) {
+      console.error(e)
+      setEditError(formatMenuAddError(e))
+    } finally {
+      setSaving(false)
+    }
+  }, [cancelEditing, editingId, editingName, editingPrice, onUpdateItem, saving])
+
   return (
     <div className="mx-auto w-full max-w-7xl space-y-10 pb-16">
       <section className="rounded-lg border border-emerald-200/90 bg-white p-3 shadow-sm sm:p-4">
@@ -227,6 +279,14 @@ export function MenuManagementPanel({
             新增失敗：{addError}
           </p>
         ) : null}
+        {editError ? (
+          <p
+            className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+            role="alert"
+          >
+            編輯失敗：{editError}
+          </p>
+        ) : null}
       </section>
 
       <section>
@@ -263,21 +323,73 @@ export function MenuManagementPanel({
                       key={it.id}
                       className="flex items-center gap-1.5 rounded-md border border-slate-100 bg-white px-1.5 py-1 shadow-sm"
                     >
-                      <span className="min-w-0 flex-1 text-xs leading-snug text-slate-900 sm:text-sm">
-                        <span className="text-slate-400">·</span>{' '}
-                        <span className="font-medium">{it.name}</span>{' '}
-                        <span className="whitespace-nowrap tabular-nums text-slate-600">
-                          ${it.price}
-                        </span>
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => void removeItem(it.id)}
-                        disabled={saving}
-                        className="shrink-0 rounded border border-rose-200/90 bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800 hover:bg-rose-100 disabled:opacity-40 sm:text-xs"
-                      >
-                        刪除
-                      </button>
+                      {editingId === it.id ? (
+                        <>
+                          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                            <input
+                              value={editingName}
+                              onChange={(e) => setEditingName(e.target.value)}
+                              disabled={saving}
+                              className="min-w-0 flex-1 rounded border border-slate-200 px-2 py-1 text-xs text-slate-900 outline-none ring-emerald-400/20 focus:ring-2 disabled:opacity-50 sm:text-sm"
+                              placeholder="餐點名稱"
+                            />
+                            <input
+                              inputMode="numeric"
+                              value={editingPrice}
+                              onChange={(e) => setEditingPrice(e.target.value)}
+                              disabled={saving}
+                              className="w-16 shrink-0 rounded border border-slate-200 px-2 py-1 text-right text-xs tabular-nums text-slate-900 outline-none ring-emerald-400/20 focus:ring-2 disabled:opacity-50 sm:text-sm"
+                              placeholder="金額"
+                            />
+                          </div>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => void saveEditingItem()}
+                              disabled={saving || !editingName.trim()}
+                              className="rounded border border-emerald-200/90 bg-emerald-50 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-800 hover:bg-emerald-100 disabled:opacity-40 sm:text-xs"
+                            >
+                              儲存
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => cancelEditing()}
+                              disabled={saving}
+                              className="rounded border border-slate-200/90 bg-slate-50 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-40 sm:text-xs"
+                            >
+                              取消
+                            </button>
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <span className="min-w-0 flex-1 text-xs leading-snug text-slate-900 sm:text-sm">
+                            <span className="text-slate-400">·</span>{' '}
+                            <span className="font-medium">{it.name}</span>{' '}
+                            <span className="whitespace-nowrap tabular-nums text-slate-600">
+                              ${it.price}
+                            </span>
+                          </span>
+                          <div className="flex shrink-0 items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => startEditingItem(it)}
+                              disabled={saving}
+                              className="rounded border border-sky-200/90 bg-sky-50 px-1.5 py-0.5 text-[10px] font-semibold text-sky-800 hover:bg-sky-100 disabled:opacity-40 sm:text-xs"
+                            >
+                              編輯
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void removeItem(it.id)}
+                              disabled={saving}
+                              className="rounded border border-rose-200/90 bg-rose-50 px-1.5 py-0.5 text-[10px] font-semibold text-rose-800 hover:bg-rose-100 disabled:opacity-40 sm:text-xs"
+                            >
+                              刪除
+                            </button>
+                          </div>
+                        </>
+                      )}
                     </li>
                   ))}
                 </ul>

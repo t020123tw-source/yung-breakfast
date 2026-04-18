@@ -9,6 +9,7 @@ import {
   deleteMenuItemsByCategoryName,
   fetchMenuItems,
   insertMenuItemRow,
+  updateMenuItemById,
 } from './lib/menuSupabase'
 import type { Order, OtherStoreEntry, Personnel } from './domain/breakfastTypes'
 
@@ -158,6 +159,16 @@ function App() {
     setMenu(fresh.menu)
   }, [])
 
+  const onUpdateMenuItem = useCallback(
+    async (args: { id: string; name: string; price: number }) => {
+      await updateMenuItemById(args)
+      const fresh = await fetchMenuItems()
+      setCategories(fresh.categories)
+      setMenu(fresh.menu)
+    },
+    [],
+  )
+
   return (
     <div className="min-h-dvh w-full bg-gradient-to-br from-amber-50 via-orange-50/40 to-emerald-50/30 text-slate-900">
       <header className="border-b border-amber-300/90 bg-white/95 shadow-sm">
@@ -275,6 +286,7 @@ function App() {
               onAddItem={onAddMenuItem}
               onRemoveItem={onRemoveMenuItem}
               onRemoveCategory={onRemoveMenuCategory}
+              onUpdateItem={onUpdateMenuItem}
             />
           </div>
         )}
