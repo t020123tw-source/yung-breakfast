@@ -13,7 +13,6 @@ import {
   filterItemsForWheel,
   getFixedDrinkSelectOptions,
   isDrinkItem,
-  isMealItem,
   isToastItem,
 } from '../data/menuData'
 import type { Order, Personnel } from '../domain/breakfastTypes'
@@ -213,12 +212,13 @@ function computeColleagueOrderTotal(
   return { total, hasUnpriced }
 }
 
-/** 依人員設定：僅在勾選「吐司類一律不烤」且品項為吐司時加 (不烤) */
+/** 依人員設定：僅對非飲料類餐點加註，例如吐司類可自動加 (不烤) */
 function formatFoodLabelForPerson(
   food: MenuItem,
   person: Personnel | undefined,
 ): string {
   let s = food.name
+  if (isDrinkItem(food)) return s
   if (person?.requiresUntoastedToast && isToastItem(food)) {
     s += '(不烤)'
   }
@@ -297,7 +297,7 @@ function labelForFoodSegment(
   if (!t) return null
   const byId = menuFromMap(menuMap, t)
   const food = byId ?? menu.find((m) => m.name === t)
-  if (food && isMealItem(food)) {
+  if (food) {
     return formatFoodLabelForPerson(food, person)
   }
   return t
@@ -1363,7 +1363,7 @@ export function BreakfastOrderingApp({
                               e.preventDefault()
                               cancelScheduledSelectAndToggleAbsent(p.id)
                             }}
-                            className="flex min-h-[2.2rem] min-w-0 max-w-[6rem] flex-1 cursor-pointer flex-col items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-0.5 text-center text-xs font-semibold leading-tight text-slate-900 shadow-sm hover:bg-slate-200/70 sm:max-w-[6.5rem] sm:text-sm"
+                            className="flex min-h-[2.2rem] min-w-0 max-w-[5.25rem] flex-1 cursor-pointer flex-col items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-0.5 text-center text-xs font-semibold leading-tight text-slate-900 shadow-sm hover:bg-slate-200/70 sm:max-w-[5.75rem] sm:text-sm"
                           >
                             <span className="line-clamp-2 w-full break-words text-center leading-tight">
                               {p.name}
@@ -1371,7 +1371,7 @@ export function BreakfastOrderingApp({
                           </button>
                         </div>
 
-                        <div className="col-span-2 flex min-h-[2.2rem] min-w-0 items-stretch rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-0.5 shadow-sm">
+                        <div className="col-span-3 flex min-h-[2.2rem] min-w-0 items-stretch rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-0.5 shadow-sm">
                           {p.isAbsent ? (
                             <div className="flex min-w-0 flex-1 items-center justify-center text-center">
                               <AbsentSlotIcon />
@@ -1390,7 +1390,7 @@ export function BreakfastOrderingApp({
                           )}
                         </div>
 
-                        <div className="col-span-6 flex min-h-[2.2rem] min-w-0 items-stretch gap-0.5">
+                        <div className="col-span-5 flex min-h-[2.2rem] min-w-0 items-stretch gap-0.5">
                           {p.isAbsent ? (
                             <div className="flex min-h-[2.2rem] min-w-0 flex-1 items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-0.5 text-center shadow-sm">
                               <AbsentSlotIcon />
