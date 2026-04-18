@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { OtherStoreEntry, Personnel } from '../domain/breakfastTypes'
 import { updateColleagueOtherStoreFields } from '../lib/colleagueSupabase'
 
@@ -10,6 +10,7 @@ export type OtherStorePanelProps = {
 type EntryDraft = {
   otherFoods: [string, string]
   otherPrice: string
+  otherIsOnLeave: boolean
 }
 
 function normalizeFoodText(raw: unknown): string {
@@ -33,10 +34,22 @@ function otherFoodsForInputs(raw: unknown): [string, string] {
   return [parts[0], parts.slice(1).join(' + ')]
 }
 
-function joinOtherFoodsForSave(parts: [string, string]): string | null {
+function joinOtherFoodsForSave(parts: [string, string]): string {
   const filtered = parts.map((item) => normalizeFoodText(item)).filter(Boolean)
-  if (filtered.length === 0) return null
+  if (filtered.length === 0) return ''
   return filtered.join(' + ')
+}
+
+function AbsentMark() {
+  return (
+    <span
+      className="inline-flex size-4 shrink-0 items-center justify-center rounded-full bg-rose-600 text-[10px] font-bold leading-none text-white"
+      aria-label="休假"
+      role="img"
+    >
+      ×
+    </span>
+  )
 }
 
 function normalizeDraftMap(
@@ -54,6 +67,7 @@ function normalizeDraftMap(
             entry?.otherPrice == null || Number.isNaN(entry.otherPrice)
               ? ''
               : String(entry.otherPrice),
+          otherIsOnLeave: entry?.otherIsOnLeave ?? false,
         },
       ]
     }),
@@ -68,17 +82,110 @@ export function OtherStorePanel({
   const [drafts, setDrafts] = useState<Record<string, EntryDraft>>(() =>
     normalizeDraftMap(initialPersonnel, initialEntries),
   )
+  const saveTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
 
   useEffect(() => {
     setPersonnel(initialPersonnel)
     setDrafts(normalizeDraftMap(initialPersonnel, initialEntries))
   }, [initialPersonnel, initialEntries])
 
+  useEffect(() => {
+    return () => {
+      for (const timer of Object.values(saveTimersRef.current)) {
+        clearTimeout(timer)
+      }
+    }
+  }, [])
+
+  const persistDraft = useCallback(async (userId: string, draft: EntryDraft) => {
+    try {
+      await updateColleagueOtherStoreFields(userId, {
+        other_food: joinOtherFoodsForSave(draft.otherFoods),
+        other_price:
+          draft.otherPrice.trim() === ''
+            ? 0
+            : Number.isFinite(Number(draft.otherPrice))
+              ? Number(draft.otherPrice)
+              : 0,
+        other_is_on_leave: draft.otherIsOnLeave,
+      })
+    } catch (e) {
+      console.error(e)
+    }
+  }, [])
+
+  const schedulePersistDraft = useCallback(
+    (userId: string, draft: EntryDraft, ms = 520) => {
+      const existing = saveTimersRef.current[userId]
+      if (existing) clearTimeout(existing)
+      saveTimersRef.current[userId] = setTimeout(() => {
+        delete saveTimersRef.current[userId]
+        void persistDraft(userId, draft)
+      }, ms)
+    },
+    [persistDraft],
+  )
+
+  const flushPersistDraft = useCallback(
+    async (userId: string, draft: EntryDraft) => {
+      const existing = saveTimersRef.current[userId]
+      if (existing) {
+        clearTimeout(existing)
+        delete saveTimersRef.current[userId]
+      }
+      await persistDraft(userId, draft)
+    },
+    [persistDraft],
+  )
+
+  const clearPendingSaves = useCallback(() => {
+    for (const timer of Object.values(saveTimersRef.current)) {
+      clearTimeout(timer)
+    }
+    saveTimersRef.current = {}
+  }, [])
+
+  const togglePersonAbsent = useCallback(async (userId: string) => {
+    const current = drafts[userId]
+    if (!current) return
+    const nextDraft = { ...current, otherIsOnLeave: !current.otherIsOnLeave }
+    setDrafts((prev) => ({ ...prev, [userId]: nextDraft }))
+    await flushPersistDraft(userId, nextDraft)
+  }, [drafts, flushPersistDraft])
+
+  const clearAllOtherStoreFields = useCallback(async () => {
+    clearPendingSaves()
+    const nextDrafts = Object.fromEntries(
+      personnel.map((p) => [
+        p.id,
+        {
+          ...(drafts[p.id] ?? { otherFoods: ['', ''] as [string, string], otherPrice: '', otherIsOnLeave: false }),
+          otherFoods: ['', ''] as [string, string],
+          otherPrice: '0',
+        },
+      ]),
+    ) as Record<string, EntryDraft>
+    setDrafts(nextDrafts)
+    try {
+      await Promise.all(
+        personnel.map((p) =>
+          updateColleagueOtherStoreFields(p.id, {
+            other_food: '',
+            other_price: 0,
+          }),
+        ),
+      )
+    } catch (e) {
+      console.error(e)
+    }
+  }, [clearPendingSaves, drafts, personnel])
+
   const summary = useMemo(() => {
     const foodCount = new Map<string, number>()
     let totalPrice = 0
     for (const p of personnel) {
       const draft = drafts[p.id]
+      if (draft?.otherIsOnLeave) continue
       const foods = draft?.otherFoods ?? ['', '']
       const priceText = (draft?.otherPrice ?? '').trim()
       for (const food of foods.flatMap((item) => splitOtherFoods(item))) {
@@ -103,10 +210,21 @@ export function OtherStorePanel({
       <div className="mx-auto flex w-full max-w-5xl flex-col px-4 py-4 sm:px-6 lg:px-8 lg:py-5">
         <div className="flex min-h-0 min-w-0 flex-1 flex-col rounded-2xl border border-amber-200/70 bg-white/90 shadow-sm">
           <div className="border-b border-amber-100 px-3 py-3 sm:px-4">
-            <h2 className="text-sm font-semibold text-amber-950">其他店家</h2>
-            <p className="mt-1 text-xs text-amber-800/60">
-              緊湊模式清單；餐點與金額於失焦時自動寫回 Supabase。
-            </p>
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <h2 className="text-sm font-semibold text-amber-950">其他店家</h2>
+                <p className="mt-1 text-xs text-amber-800/60">
+                  緊湊模式清單；輸入時自動儲存，失焦時立即寫回 Supabase。
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => void clearAllOtherStoreFields()}
+                className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 px-2.5 text-[11px] font-semibold text-rose-800 hover:bg-rose-100 sm:px-3 sm:text-xs"
+              >
+                一鍵淨空
+              </button>
+            </div>
           </div>
 
           <ul className="h-auto flex-1 px-1 pb-0 pt-1 sm:px-2">
@@ -116,46 +234,67 @@ export function OtherStorePanel({
               </li>
             ) : null}
             {personnel.map((p) => {
-              const draft = drafts[p.id] ?? { otherFoods: ['', ''], otherPrice: '' }
+              const draft = drafts[p.id] ?? {
+                otherFoods: ['', ''] as [string, string],
+                otherPrice: '',
+                otherIsOnLeave: false,
+              }
               return (
                 <li key={p.id} className="border-b border-amber-100/80 last:border-b-0">
-                  <div className="grid grid-cols-12 gap-0.5 py-1 pl-0.5 pr-0.5 sm:gap-1 sm:pl-1 sm:pr-1">
-                    <div className="col-span-3 flex min-h-[2.2rem] min-w-0 items-stretch">
-                      <div className="flex min-h-[2.2rem] min-w-0 flex-1 items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-0.5 text-center text-xs font-semibold leading-tight text-slate-900 shadow-sm sm:text-sm">
-                        <span className="line-clamp-2 w-full break-words">{p.name}</span>
-                      </div>
+                  <div className="flex gap-0.5 py-1 pl-0.5 pr-0.5 sm:gap-1 sm:pl-1 sm:pr-1">
+                    <div className="flex w-20 shrink-0 min-h-[2.2rem] min-w-0 items-stretch">
+                      <button
+                        type="button"
+                        onDoubleClick={() => void togglePersonAbsent(p.id)}
+                        title={`${p.name}（雙擊切換休假）`}
+                        className={`flex min-h-[2.2rem] min-w-0 flex-1 items-center justify-center rounded-lg border px-1 py-0.5 text-center text-xs font-semibold leading-tight shadow-sm sm:text-sm ${
+                          draft.otherIsOnLeave
+                            ? 'border-rose-200/90 bg-rose-50 text-rose-900 opacity-80'
+                            : 'border-slate-200/90 bg-slate-100 text-slate-900'
+                        }`}
+                      >
+                        <span className="flex min-w-0 items-center justify-center gap-1">
+                          <span className="line-clamp-2 break-words">{p.name}</span>
+                          {draft.otherIsOnLeave ? <AbsentMark /> : null}
+                        </span>
+                      </button>
                     </div>
 
-                    <div className="col-span-6 flex min-h-[2.2rem] min-w-0 items-stretch">
+                    <div className="flex min-h-[2.2rem] min-w-0 flex-1 items-stretch">
                       <div className="grid min-h-[2.2rem] w-full min-w-0 grid-cols-2 gap-2">
                         {draft.otherFoods.map((food, idx) => (
                           <input
                             key={`${p.id}-other-food-${idx}`}
                             type="text"
                             value={food}
-                            onChange={(e) =>
+                            onChange={(e) => {
+                              const nextDraft = {
+                                ...draft,
+                                otherFoods: draft.otherFoods.map((item, i) =>
+                                  i === idx ? e.target.value : item,
+                                ) as [string, string],
+                              }
                               setDrafts((prev) => ({
                                 ...prev,
-                                [p.id]: {
-                                  ...draft,
-                                  otherFoods: draft.otherFoods.map((item, i) =>
-                                    i === idx ? e.target.value : item,
-                                  ) as [string, string],
-                                },
+                                [p.id]: nextDraft,
                               }))
-                            }
+                              if (!nextDraft.otherIsOnLeave) {
+                                schedulePersistDraft(p.id, nextDraft)
+                              }
+                            }}
                             onBlur={async () => {
+                              if (draft.otherIsOnLeave) return
                               const nextFood = joinOtherFoodsForSave(draft.otherFoods)
+                              const nextDraft = {
+                                ...draft,
+                                otherFoods: otherFoodsForInputs(nextFood),
+                              }
                               try {
-                                await updateColleagueOtherStoreFields(p.id, {
-                                  other_food: nextFood,
-                                })
+                                setDrafts((prev) => ({ ...prev, [p.id]: nextDraft }))
+                                await flushPersistDraft(p.id, nextDraft)
                                 setDrafts((prev) => ({
                                   ...prev,
-                                  [p.id]: {
-                                    ...prev[p.id],
-                                    otherFoods: otherFoodsForInputs(nextFood ?? ''),
-                                  },
+                                  [p.id]: nextDraft,
                                 }))
                               } catch (e) {
                                 console.error(e)
@@ -163,41 +302,47 @@ export function OtherStorePanel({
                             }}
                             placeholder={`餐點 ${idx + 1}`}
                             autoComplete="off"
+                            disabled={!!draft.otherIsOnLeave}
                             className="min-h-[2.2rem] min-w-0 w-full rounded-lg border border-slate-200/90 bg-white px-2 py-0.5 text-xs leading-tight text-slate-900 outline-none ring-amber-400/30 focus:ring-2 sm:text-sm"
                           />
                         ))}
                       </div>
                     </div>
 
-                    <div className="col-span-3 flex min-h-[2.2rem] min-w-0 items-stretch">
+                    <div className="flex w-16 shrink-0 min-h-[2.2rem] min-w-0 items-stretch">
                       <input
                         type="text"
                         inputMode="decimal"
                         value={draft.otherPrice}
-                        onChange={(e) =>
+                        onChange={(e) => {
+                          const nextDraft = { ...draft, otherPrice: e.target.value }
                           setDrafts((prev) => ({
                             ...prev,
-                            [p.id]: { ...draft, otherPrice: e.target.value },
+                            [p.id]: nextDraft,
                           }))
-                        }
+                          if (!nextDraft.otherIsOnLeave) {
+                            schedulePersistDraft(p.id, nextDraft)
+                          }
+                        }}
                         onBlur={async () => {
+                          if (draft.otherIsOnLeave) return
                           const priceText = draft.otherPrice.trim()
                           const nextPrice =
                             priceText === ''
-                              ? null
+                              ? 0
                               : Number.isFinite(Number(priceText))
                                 ? Number(priceText)
-                                : null
+                                : 0
+                          const nextDraft = {
+                            ...draft,
+                            otherPrice: String(nextPrice),
+                          }
                           try {
-                            await updateColleagueOtherStoreFields(p.id, {
-                              other_price: nextPrice,
-                            })
+                            setDrafts((prev) => ({ ...prev, [p.id]: nextDraft }))
+                            await flushPersistDraft(p.id, nextDraft)
                             setDrafts((prev) => ({
                               ...prev,
-                              [p.id]: {
-                                ...prev[p.id],
-                                otherPrice: nextPrice == null ? '' : String(nextPrice),
-                              },
+                              [p.id]: nextDraft,
                             }))
                           } catch (e) {
                             console.error(e)
@@ -205,6 +350,7 @@ export function OtherStorePanel({
                         }}
                         placeholder="金額"
                         autoComplete="off"
+                        disabled={!!draft.otherIsOnLeave}
                         className="min-h-[2.2rem] w-full rounded-lg border border-slate-200/90 bg-white px-2 py-0.5 text-right text-xs font-medium leading-tight text-slate-900 outline-none ring-amber-400/30 focus:ring-2 sm:text-sm"
                       />
                     </div>

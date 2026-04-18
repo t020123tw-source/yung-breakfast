@@ -4,7 +4,7 @@ import { supabase } from './supabaseClient'
 /**
  * 與 Supabase public.colleagues 實際欄位一致：
  * id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent,
- * current_food, current_note, internal_note, is_manual, other_food, other_price, created_at
+ * current_food, current_note, internal_note, is_manual, other_food, other_price, other_is_on_leave, created_at
  */
 export type ColleagueRow = {
   id: string
@@ -20,6 +20,7 @@ export type ColleagueRow = {
   is_manual: boolean
   other_food: string | null
   other_price: number | null
+  other_is_on_leave: boolean | null
   created_at?: string
 }
 
@@ -41,7 +42,7 @@ export type ColleagueUpsertPayload = {
 /**
  * insert() 僅允許資料表實際存在的欄位（不含 created_at），避免多餘屬性導致 PostgREST 拒絕。
  * 與 colleagues：id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent,
- * current_food, current_note, internal_note, is_manual, other_food, other_price
+ * current_food, current_note, internal_note, is_manual, other_food, other_price, other_is_on_leave
  */
 export type ColleagueInsertPayload = {
   id: string
@@ -57,10 +58,11 @@ export type ColleagueInsertPayload = {
   is_manual: boolean
   other_food: string | null
   other_price: number | null
+  other_is_on_leave: boolean
 }
 
 const COLLEAGUE_SELECT =
-  'id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent, current_food, current_note, internal_note, is_manual, other_food, other_price'
+  'id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent, current_food, current_note, internal_note, is_manual, other_food, other_price, other_is_on_leave'
 
 const COLLEAGUE_SELECT_LEGACY =
   'id, name, order_index, fixed_drink, requires_untoasted_toast, dislike_list, is_absent, current_food, current_note, internal_note, is_manual'
@@ -83,6 +85,7 @@ function isMissingOtherStoreColumnsError(err: unknown): boolean {
   return (
     text.includes('other_food') ||
     text.includes('other_price') ||
+    text.includes('other_is_on_leave') ||
     text.includes('column') && text.includes('does not exist')
   )
 }
@@ -124,6 +127,7 @@ export function otherStoreEntryFromRow(r: ColleagueRow): OtherStoreEntry {
     userId: r.id,
     otherFood: normalizedFood,
     otherPrice: r.other_price ?? 0,
+    otherIsOnLeave: r.other_is_on_leave ?? false,
   }
 }
 
@@ -170,7 +174,7 @@ export async function fetchColleaguesFromSupabase(): Promise<{
   if (primary.error) {
     if (!isMissingOtherStoreColumnsError(primary.error)) throw primary.error
     console.warn(
-      'colleagues.other_food / other_price 可能尚未被 API schema cache 識別，退回舊查詢。',
+      'colleagues.other_food / other_price / other_is_on_leave 可能尚未被 API schema cache 識別，退回舊查詢。',
       primary.error,
     )
     const legacy = await supabase
@@ -179,11 +183,14 @@ export async function fetchColleaguesFromSupabase(): Promise<{
       .order('order_index', { ascending: true, nullsFirst: false })
       .order('name', { ascending: true })
     if (legacy.error) throw legacy.error
-    rows = ((legacy.data ?? []) as Array<Omit<ColleagueRow, 'other_food' | 'other_price'>>).map(
+    rows = ((
+      legacy.data ?? []
+    ) as Array<Omit<ColleagueRow, 'other_food' | 'other_price' | 'other_is_on_leave'>>).map(
       (row) => ({
         ...row,
         other_food: '',
         other_price: 0,
+        other_is_on_leave: false,
       }),
     )
   } else {
@@ -237,6 +244,7 @@ export function buildNewColleagueInsertPayload(
     is_manual: false,
     other_food: null,
     other_price: null,
+    other_is_on_leave: false,
   }
 }
 
@@ -255,6 +263,7 @@ export async function insertColleagueRow(row: ColleagueInsertPayload): Promise<v
     is_manual: row.is_manual,
     other_food: row.other_food,
     other_price: row.other_price,
+    other_is_on_leave: row.other_is_on_leave,
   }
   const { error } = await supabase.from('colleagues').insert(payload)
   if (error) throw error
@@ -262,7 +271,11 @@ export async function insertColleagueRow(row: ColleagueInsertPayload): Promise<v
 
 export async function updateColleagueOtherStoreFields(
   userId: string,
-  patch: { other_food?: string | null; other_price?: number | null },
+  patch: {
+    other_food?: string | null
+    other_price?: number | null
+    other_is_on_leave?: boolean
+  },
 ): Promise<void> {
   const { error } = await supabase.from('colleagues').update(patch).eq('id', userId)
   if (error) throw error

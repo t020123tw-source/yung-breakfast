@@ -32,4 +32,5 @@ export type OtherStoreEntry = {
   userId: string
   otherFood?: string
   otherPrice?: number | null
+  otherIsOnLeave?: boolean
 }
