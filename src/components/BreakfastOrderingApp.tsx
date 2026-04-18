@@ -59,11 +59,60 @@ function menuFromMap(
   return menuMap.get(id)
 }
 
+/** current_food 是否視為空白（轉盤可寫入） */
+function foodLineIsEmpty(v: string | null | undefined): boolean {
+  return (v ?? '').trim() === ''
+}
+
+/**
+ * 與計價／彙整／點餐板共用：以 `+` 拆段（容錯各種空白），再 trim、去掉空段。
+ */
+function splitCurrentFoodSegments(raw: string | null | undefined): string[] {
+  const s = (raw ?? '').trim()
+  if (!s) return []
+  return s.split('+').map((item) => item.trim()).filter(Boolean)
+}
+
+/** 選人時：拆成輸入列；無餐點時至少保留一列空白 */
+function mealLinesFromCurrentFood(raw: string | null | undefined): string[] {
+  const parts = splitCurrentFoodSegments(raw)
+  return parts.length > 0 ? parts : ['']
+}
+
+/** 儲存：過濾空白列後以半形 ` + ` 串回 current_food */
+function joinMealLinesToCurrentFood(lines: string[]): string | null {
+  const filtered = lines.map((x) => x.trim()).filter(Boolean)
+  if (filtered.length === 0) return null
+  return filtered.join(' + ')
+}
+
+/**
+ * 將 current_food 拆段後，每段比對 menu id 或 name 加總價格。
+ */
+function sumFoodPricesFromCurrentFood(
+  raw: string,
+  menu: MenuItem[],
+): { sum: number; hasUnpricedSegment: boolean } {
+  const segments = splitCurrentFoodSegments(raw)
+  if (segments.length === 0) return { sum: 0, hasUnpricedSegment: false }
+  let sum = 0
+  let hasUnpricedSegment = false
+  for (const seg of segments) {
+    const byId = menu.find((m) => m.id === seg)
+    const item = byId ?? menu.find((m) => m.name === seg)
+    if (item) {
+      sum += item.price
+    } else {
+      hasUnpricedSegment = true
+    }
+  }
+  return { sum, hasUnpricedSegment }
+}
+
 /**
  * 單人總金額：以 menu_items 比對飲料與餐點。
  * - 固定飲料：優先以 id 對應；若無則以字串與品項 name 完全相符者計價。
- * - 餐點：手動輸入以 name 比對；非手動以 id 比對。
- * - 比對不到者該項以 0 計；hasUnpriced 表示有欄位未在菜單中找到。
+ * - 餐點（current_food）：以 `+` 拆段（容錯空白），每段依 id 或 name 比對加總。
  * - 若備註（current_note）含「+蛋」，總額另加 15 元。
  */
 function computeColleagueOrderTotal(
@@ -93,30 +142,15 @@ function computeColleagueOrderTotal(
     }
   }
 
-  let foodPrice = 0
-  let foodOk = true
   const rawFood = (o.selectedFoodId ?? '').trim()
-  if (rawFood) {
-    if (o.isManual) {
-      const byName = menu.find((m) => m.name === rawFood)
-      if (byName) {
-        foodPrice = byName.price
-      } else {
-        foodPrice = 0
-        foodOk = false
-      }
-    } else {
-      const byId = menu.find((m) => m.id === rawFood)
-      if (byId) {
-        foodPrice = byId.price
-      } else {
-        foodPrice = 0
-        foodOk = false
-      }
-    }
-  }
+  const { sum: foodPrice, hasUnpricedSegment } = sumFoodPricesFromCurrentFood(
+    rawFood,
+    menu,
+  )
+  const foodOk = rawFood === '' || !hasUnpricedSegment
 
-  const hasUnpriced = (!drinkOk && fd !== '') || (!foodOk && rawFood !== '')
+  const hasUnpriced =
+    (!drinkOk && fd !== '') || (!foodOk && rawFood !== '')
   let total = drinkPrice + foodPrice
   const note = o.foodRemark ?? ''
   if (note.includes(EGG_REMARK_TOKEN)) {
@@ -186,22 +220,40 @@ function ColleagueDragHandleIcon() {
   )
 }
 
+/** 單段餐點字串 → 店家彙整用標籤（含吐司不烤） */
+function labelForFoodSegment(
+  menuMap: Map<string, MenuItem>,
+  menu: MenuItem[],
+  segment: string,
+  person: Personnel | undefined,
+): string | null {
+  const t = segment.trim()
+  if (!t) return null
+  const byId = menuFromMap(menuMap, t)
+  const food = byId ?? menu.find((m) => m.name === t)
+  if (food && isMealItem(food)) {
+    return formatFoodLabelForPerson(food, person)
+  }
+  return t
+}
+
 function buildFoodLineForShop(
   menuMap: Map<string, MenuItem>,
+  menu: MenuItem[],
   o: Order,
   person: Personnel | undefined,
 ): string | null {
   const raw = (o.selectedFoodId ?? '').trim()
   if (!raw) return null
-  if (o.isManual) {
-    let label = raw
-    const fr = (o.foodRemark ?? '').trim()
-    if (fr) label += `（${fr}）`
-    return label
+  const segments = splitCurrentFoodSegments(raw)
+  if (segments.length === 0) return null
+  const parts: string[] = []
+  for (const seg of segments) {
+    const lab = labelForFoodSegment(menuMap, menu, seg, person)
+    if (lab) parts.push(lab)
   }
-  const food = menuFromMap(menuMap, o.selectedFoodId)
-  if (!food || !isMealItem(food)) return null
-  let label = formatFoodLabelForPerson(food, person)
+  if (parts.length === 0) return null
+  let label = parts.join(' + ')
   const fr = (o.foodRemark ?? '').trim()
   if (fr) label += `（${fr}）`
   return label
@@ -210,6 +262,7 @@ function buildFoodLineForShop(
 /** 產生單行純文字總結（不含表格） */
 function buildShopSummaryLine(
   menuMap: Map<string, MenuItem>,
+  menu: MenuItem[],
   orders: Order[],
   personnel: Personnel[],
 ): string {
@@ -224,10 +277,14 @@ function buildShopSummaryLine(
         map.set(drink.name, (map.get(drink.name) ?? 0) + 1)
       }
     }
-    if (o.selectedFoodId) {
-      const line = buildFoodLineForShop(menuMap, o, person)
-      if (line) {
-        map.set(line, (map.get(line) ?? 0) + 1)
+    if (o.selectedFoodId?.trim()) {
+      const raw = o.selectedFoodId.trim()
+      const segments = splitCurrentFoodSegments(raw)
+      for (const seg of segments) {
+        const line = labelForFoodSegment(menuMap, menu, seg, person)
+        if (line) {
+          map.set(line, (map.get(line) ?? 0) + 1)
+        }
       }
     }
   }
@@ -315,8 +372,8 @@ export function BreakfastOrderingApp({
     })()
   }, [personnel, orders, persistTick])
 
-  /** 指定餐點手動輸入草稿（與轉盤選中的 id 分離；僅在 isManual 時與 DB 同步顯示） */
-  const [manualFoodDraft, setManualFoodDraft] = useState('')
+  /** 今日餐點多欄草稿（儲存時拼接為 current_food） */
+  const [mealLineDrafts, setMealLineDrafts] = useState<string[]>([''])
   const [foodRemarkDraft, setFoodRemarkDraft] = useState('')
 
   const [spinPhase, setSpinPhase] = useState<'idle' | 'spinning'>('idle')
@@ -450,16 +507,11 @@ export function BreakfastOrderingApp({
           o.selectedDrinkId && ids.has(o.selectedDrinkId)
             ? o.selectedDrinkId
             : null
-        /** 手動輸入之餐點為任意文字，不可依菜單 id 清掉 */
-        const sf = o.isManual
-          ? o.selectedFoodId
-          : o.selectedFoodId && ids.has(o.selectedFoodId)
-            ? o.selectedFoodId
-            : null
-        if (sf === o.selectedFoodId && sd === o.selectedDrinkId) return o
+        /** current_food 為任意文字／多段品項，不因菜單 id 表變更而清空 */
+        if (sd === o.selectedDrinkId) return o
         any = true
         touched.add(o.userId)
-        return { ...o, selectedFoodId: sf, selectedDrinkId: sd }
+        return { ...o, selectedDrinkId: sd }
       })
       if (any) {
         queueMicrotask(() => {
@@ -472,7 +524,7 @@ export function BreakfastOrderingApp({
 
   useEffect(() => {
     const o = orders.find((x) => x.userId === selectedPersonId)
-    setManualFoodDraft(o?.isManual ? (o.selectedFoodId ?? '') : '')
+    setMealLineDrafts(mealLinesFromCurrentFood(o?.selectedFoodId))
     setFoodRemarkDraft(o?.foodRemark ?? '')
   }, [selectedPersonId, orders])
 
@@ -641,7 +693,6 @@ export function BreakfastOrderingApp({
                 ...o,
                 selectedFoodId: null,
                 foodRemark: undefined,
-                isManual: false,
               }
             : o,
         ),
@@ -651,58 +702,72 @@ export function BreakfastOrderingApp({
     [schedulePersist],
   )
 
-  /**
-   * 手動餐點：寫入 current_food 任意文字，is_manual = true；清空時 is_manual = false。
-   * 轉盤結果（is_manual false）不受空白草稿影響。
-   */
-  const commitManualMealInput = useCallback(() => {
-    if (!selectedPersonId) return
-    const p = personnel.find((x) => x.id === selectedPersonId)
-    if (p?.isAbsent) return
-    const o = orders.find((x) => x.userId === selectedPersonId)
-    if (!o) return
-    const draft = manualFoodDraft.trim()
-    if (draft === '') {
-      if (o.isManual) {
+  /** 將多欄草稿寫入 current_food（與轉盤共用）；全空則清除餐點與餐點備註 */
+  const persistMealLines = useCallback(
+    (lines: string[]) => {
+      if (!selectedPersonId) return
+      const p = personnel.find((x) => x.id === selectedPersonId)
+      if (p?.isAbsent) return
+      const joined = joinMealLinesToCurrentFood(lines)
+      if (joined === null) {
         setOrders((prev) =>
           prev.map((row) =>
             row.userId === selectedPersonId
               ? {
                   ...row,
                   selectedFoodId: null,
-                  isManual: false,
                   foodRemark: undefined,
                 }
               : row,
           ),
         )
         setFoodRemarkDraft('')
-        schedulePersist(selectedPersonId)
+        setMealLineDrafts([''])
+      } else {
+        setOrders((prev) =>
+          prev.map((row) =>
+            row.userId === selectedPersonId
+              ? { ...row, selectedFoodId: joined }
+              : row,
+          ),
+        )
       }
-      return
-    }
-    setOrders((prev) =>
-      prev.map((row) =>
-        row.userId === selectedPersonId
-          ? {
-              ...row,
-              selectedFoodId: draft,
-              isManual: true,
-            }
-          : row,
-      ),
-    )
-    schedulePersist(selectedPersonId)
-  }, [selectedPersonId, manualFoodDraft, personnel, orders, schedulePersist])
+      schedulePersist(selectedPersonId)
+    },
+    [selectedPersonId, personnel, schedulePersist],
+  )
+
+  const commitMealLines = useCallback(() => {
+    persistMealLines(mealLineDrafts)
+  }, [mealLineDrafts, persistMealLines])
+
+  const addMealLineRow = useCallback(() => {
+    setMealLineDrafts((prev) => [...prev, ''])
+  }, [])
+
+  const removeMealLineRow = useCallback(
+    (index: number) => {
+      if (index < 1) return
+      setMealLineDrafts((prev) => {
+        const next = prev.filter((_, i) => i !== index)
+        const normalized = next.length === 0 ? [''] : next
+        queueMicrotask(() => persistMealLines(normalized))
+        return normalized
+      })
+    },
+    [persistMealLines],
+  )
 
   /**
    * 清空所有人非指定套用的餐點，並將全員恢復為出勤（取消休假）。
    */
   const clearAllWheelFoodsGlobally = useCallback(() => {
     const nextP = personnel.map((p) => ({ ...p, isAbsent: false }))
-    const nextO = orders.map((o) =>
-      o.isManual ? o : { ...o, selectedFoodId: null, foodRemark: undefined },
-    )
+    const nextO = orders.map((o) => ({
+      ...o,
+      selectedFoodId: null,
+      foodRemark: undefined,
+    }))
     setPersonnel(nextP)
     setOrders(nextO)
     void upsertColleagueRows(
@@ -714,8 +779,8 @@ export function BreakfastOrderingApp({
   }, [personnel, orders])
 
   /**
-   * 一鍵全員轉盤：略過休假與手動指定；其餘依與單人轉盤相同規則隨機配餐。
-   * (不烤) 由顯示層依品項類別與勾選自動加註，不寫入 id 以外欄位。
+   * 一鍵全員轉盤：略過休假；僅對 current_food 為空者抽籤，寫入品項顯示名稱（與手動輸入同欄）。
+   * (不烤) 由顯示層依品項類別與勾選自動加註。
    */
   const batchSpinAll = useCallback(() => {
     spinSessionIdRef.current += 1
@@ -731,7 +796,7 @@ export function BreakfastOrderingApp({
     const nextO = orders.map((o) => {
       const p = personnel.find((x) => x.id === o.userId)
       if (!p || p.isAbsent) return o
-      if (o.isManual) return o
+      if (!foodLineIsEmpty(o.selectedFoodId)) return o
 
       const drink = p.fixedDrinkId
         ? menuFromMap(menuMap, p.fixedDrinkId)
@@ -750,15 +815,14 @@ export function BreakfastOrderingApp({
           ...o,
           selectedFoodId: null,
           foodRemark: undefined,
-          isManual: false,
         }
       }
 
       const pick = pool[Math.floor(Math.random() * pool.length)]
+      const label = formatFoodLabelForPerson(pick, p)
       return {
         ...o,
-        selectedFoodId: pick.id,
-        isManual: false,
+        selectedFoodId: label,
         foodRemark: undefined,
       }
     })
@@ -774,7 +838,7 @@ export function BreakfastOrderingApp({
   const startWheel = useCallback(() => {
     if (!selectedPersonId || wheelCandidates.length === 0) return
     const co = orders.find((o) => o.userId === selectedPersonId)
-    if (co?.isManual) return
+    if (co && !foodLineIsEmpty(co.selectedFoodId)) return
     const p = personnel.find((x) => x.id === selectedPersonId)
     if (p?.isAbsent) return
 
@@ -818,13 +882,13 @@ export function BreakfastOrderingApp({
       }
 
       setShufflePreviewId(pick.id)
+      const mealLabel = formatFoodLabelForPerson(pick, p)
       setOrders((prev) =>
         prev.map((o) =>
           o.userId === selectedPersonId
             ? {
                 ...o,
-                selectedFoodId: pick.id,
-                isManual: false,
+                selectedFoodId: mealLabel,
                 foodRemark: undefined,
               }
             : o,
@@ -856,7 +920,6 @@ export function BreakfastOrderingApp({
             ...o,
             selectedFoodId: null,
             foodRemark: undefined,
-            isManual: false,
           }
         }
         const np = nextPersonnel.find((x) => x.id === id)!
@@ -953,7 +1016,6 @@ export function BreakfastOrderingApp({
           userId: id,
           selectedDrinkId: null,
           selectedFoodId: null,
-          isManual: false,
           foodRemark: undefined,
         }
         setPersonnel((prev) => [...prev, p])
@@ -973,8 +1035,8 @@ export function BreakfastOrderingApp({
   }, [addColleagueBusy, newColleagueName, onColleaguesSynced, personnel])
 
   const shopSummaryLine = useMemo(
-    () => buildShopSummaryLine(menuMap, orders, personnel),
-    [menuMap, orders, personnel],
+    () => buildShopSummaryLine(menuMap, menu, orders, personnel),
+    [menuMap, menu, orders, personnel],
   )
 
   const wheelEmptyCenterText = useMemo(() => {
@@ -1007,46 +1069,30 @@ export function BreakfastOrderingApp({
     const drinkName = o.selectedDrinkId
       ? menuFromMap(menuMap, o.selectedDrinkId)?.name ?? ''
       : ''
-    let mealLine = ''
-    const fr = (o.foodRemark ?? '').trim()
-    if ((o.selectedFoodId ?? '').trim()) {
-      if (o.isManual) {
-        mealLine = (o.selectedFoodId ?? '').trim()
-        if (fr) mealLine += `（${fr}）`
-      } else {
-        const food = menuFromMap(menuMap, o.selectedFoodId)
-        if (food && isMealItem(food)) {
-          const base = formatFoodLabelForPerson(food, p)
-          let tail = base
-          if (fr) tail += `（${fr}）`
-          mealLine = tail
-        } else {
-          mealLine = (o.selectedFoodId ?? '').trim()
-        }
-      }
-    }
+    const mealLine = buildFoodLineForShop(menuMap, menu, o, p) ?? ''
     return { name: p.name, drinkName, mealLine }
   }
 
   const todayMealSummaryLine = useMemo(() => {
     if (!selectedPerson || !currentOrder) return ''
     if (selectedPerson.isAbsent) return '休假中'
+    const raw = (currentOrder.selectedFoodId ?? '').trim()
+    if (!raw) return ''
     const fr = (currentOrder.foodRemark ?? '').trim()
-    const rawFood = (currentOrder.selectedFoodId ?? '').trim()
-    if (currentOrder.isManual && rawFood) {
-      let s = rawFood
-      if (fr) s += `（${fr}）`
-      return s
-    }
-    const food = menuFromMap(menuMap, currentOrder.selectedFoodId)
-    if (food && isMealItem(food)) {
-      const base = formatFoodLabelForPerson(food, selectedPerson)
-      let s = `${base}（$${food.price}）`
-      if (fr) s += `（${fr}）`
-      return s
-    }
-    return ''
-  }, [selectedPerson, currentOrder, menuMap])
+    const segments = splitCurrentFoodSegments(raw)
+    const parts = segments.map((seg) => {
+      const item =
+        menuFromMap(menuMap, seg) ?? menu.find((m) => m.name === seg)
+      if (item) {
+        const base = formatFoodLabelForPerson(item, selectedPerson)
+        return `${base}（$${item.price}）`
+      }
+      return `${seg}（未入價）`
+    })
+    let s = parts.join(' + ')
+    if (fr) s += `（${fr}）`
+    return s
+  }, [selectedPerson, currentOrder, menuMap, menu])
 
   return (
     <>
@@ -1082,7 +1128,7 @@ export function BreakfastOrderingApp({
                       type="button"
                       onClick={batchSpinAll}
                       className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg bg-amber-600 px-2.5 text-[11px] font-bold text-white shadow-sm hover:bg-amber-700 sm:px-3 sm:text-xs"
-                      title="為所有出勤且非手動指定餐點的同事隨機配餐；休假與手動套用者略過"
+                      title="僅為「今日餐點」空白者抽籤；已有餐點文字者略過；休假者略過"
                     >
                       🎲 全員轉盤
                     </button>
@@ -1090,7 +1136,7 @@ export function BreakfastOrderingApp({
                       type="button"
                       onClick={clearAllWheelFoodsGlobally}
                       className="inline-flex h-8 shrink-0 items-center justify-center rounded-lg border border-rose-200 bg-rose-50 px-2.5 text-[11px] font-semibold text-rose-800 hover:bg-rose-100 sm:px-3 sm:text-xs"
-                      title="清空非指定套用之餐點，並將全員恢復為出勤"
+                      title="清除全員今日餐點與餐點備註，並將全員恢復為出勤"
                     >
                       一鍵淨空
                     </button>
@@ -1207,18 +1253,18 @@ export function BreakfastOrderingApp({
                           )}
                         </div>
 
-                        <div className="col-span-4 flex min-h-[3.25rem] min-w-0 items-stretch gap-1">
+                        <div className="col-span-4 flex min-h-[4rem] min-w-0 items-stretch gap-1 sm:min-h-[4.25rem]">
                           {p.isAbsent ? (
-                            <div className="flex min-h-[3.25rem] min-w-0 flex-1 items-center justify-center rounded-xl border border-slate-200/90 bg-slate-100 px-2 py-2 text-center shadow-sm">
+                            <div className="flex min-h-[4rem] min-w-0 flex-1 items-center justify-center rounded-xl border border-slate-200/90 bg-slate-100 px-2 py-2 text-center shadow-sm sm:min-h-[4.25rem]">
                               <AbsentSlotIcon />
                             </div>
                           ) : (
                             <button
                               type="button"
                               onClick={() => scheduleSelectPerson(p.id)}
-                              className="flex min-h-[3.25rem] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-slate-200/90 bg-slate-100 px-2 py-2 text-center text-lg font-medium leading-snug text-slate-900 shadow-sm hover:bg-slate-200/70 sm:text-xl"
+                              className="flex min-h-[4rem] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-xl border border-slate-200/90 bg-slate-100 px-2.5 py-3 text-center text-base font-medium leading-snug text-slate-900 shadow-sm hover:bg-slate-200/70 sm:min-h-[4.25rem] sm:text-lg"
                             >
-                              <span className="block min-w-0 max-w-full break-words text-center">
+                              <span className="line-clamp-4 block min-h-[2.75rem] min-w-0 max-w-full break-words text-center sm:line-clamp-5">
                                 {row.mealLine}
                               </span>
                             </button>
@@ -1406,30 +1452,80 @@ export function BreakfastOrderingApp({
               </div>
 
               <div className="mt-3 border-t border-amber-100/80 pt-3">
-                <p className="mb-2 text-xs font-medium text-slate-700">
-                  指定餐點（手動輸入）
-                </p>
-                <label className="block text-sm font-medium text-slate-800">
-                  <span className="sr-only">指定餐點</span>
-                  <input
-                    type="text"
-                    value={manualFoodDraft}
-                    onChange={(e) => setManualFoodDraft(e.target.value)}
-                    onBlur={() => commitManualMealInput()}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter') {
-                        e.preventDefault()
-                        ;(e.target as HTMLInputElement).blur()
-                      }
-                    }}
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-xs font-medium text-slate-700">
+                    今日餐點（與轉盤共用）
+                  </p>
+                  <button
+                    type="button"
                     disabled={!!selectedPerson.isAbsent}
-                    placeholder="輸入任意餐點名稱，離開欄位時自動儲存"
-                    autoComplete="off"
-                    className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2.5 text-base text-slate-900 outline-none ring-amber-400/30 placeholder:text-slate-400 focus:ring-2 disabled:cursor-not-allowed disabled:opacity-50"
-                  />
-                </label>
+                    onClick={() => commitMealLines()}
+                    className="shrink-0 rounded-lg border border-amber-300/90 bg-amber-50 px-2.5 py-1 text-[11px] font-semibold text-amber-950 hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    儲存餐點
+                  </button>
+                </div>
+                <div className="flex max-h-[min(22rem,50vh)] flex-col gap-2 overflow-y-auto pr-0.5">
+                  {mealLineDrafts.map((line, i) => (
+                    <div
+                      key={`meal-line-${i}`}
+                      className="flex min-w-0 items-stretch gap-2"
+                    >
+                      <label className="block min-w-0 flex-1 text-sm font-medium text-slate-800">
+                        <span className="sr-only">
+                          餐點 {i + 1}
+                        </span>
+                        <input
+                          type="text"
+                          value={line}
+                          onChange={(e) => {
+                            const v = e.target.value
+                            setMealLineDrafts((prev) =>
+                              prev.map((x, j) => (j === i ? v : x)),
+                            )
+                          }}
+                          onBlur={() => commitMealLines()}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault()
+                              ;(e.target as HTMLInputElement).blur()
+                            }
+                          }}
+                          disabled={!!selectedPerson.isAbsent}
+                          placeholder={`第 ${i + 1} 道（菜單品項名稱）`}
+                          autoComplete="off"
+                          className="mt-1 min-h-[3rem] w-full rounded-lg border border-slate-200 bg-white px-3 py-3 text-base leading-snug text-slate-900 outline-none ring-amber-400/30 placeholder:text-slate-400 focus:ring-2 disabled:cursor-not-allowed disabled:opacity-50"
+                        />
+                      </label>
+                      {i === 0 ? (
+                        <button
+                          type="button"
+                          disabled={!!selectedPerson.isAbsent}
+                          onClick={() => addMealLineRow()}
+                          title="新增下一道餐點"
+                          className="mt-1 inline-flex h-[3rem] min-w-[3rem] shrink-0 items-center justify-center self-end rounded-lg border border-amber-400/90 bg-amber-50 text-xl font-bold text-amber-950 shadow-sm hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          aria-label="新增餐點欄位"
+                        >
+                          ＋
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={!!selectedPerson.isAbsent}
+                          onClick={() => removeMealLineRow(i)}
+                          title="移除此餐點欄位"
+                          className="mt-1 inline-flex h-[3rem] min-w-[3rem] shrink-0 items-center justify-center self-end rounded-lg border border-rose-300/90 bg-rose-50 text-xl font-bold text-rose-800 shadow-sm hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
+                          aria-label="刪除此餐點欄位"
+                        >
+                          －
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
                 <p className="mt-1.5 text-[10px] text-slate-500">
-                  儲存後寫入資料庫並標為手動指定；清空並離開欄位可改回參與轉盤。「一鍵淨空」仍保留手動餐點；休假中無法編輯。
+                  失去焦點或按「儲存餐點」會合併寫入（空白欄會略過）；與轉盤共用
+                  current_food。「一鍵淨空」會清除全員餐點；休假中無法編輯。
                 </p>
               </div>
 
@@ -1613,7 +1709,7 @@ export function BreakfastOrderingApp({
                   disabled={
                     spinPhase === 'spinning' ||
                     wheelCandidates.length === 0 ||
-                    !!currentOrder?.isManual
+                    !foodLineIsEmpty(currentOrder?.selectedFoodId)
                   }
                   className="mt-4 w-full rounded-2xl bg-gradient-to-r from-orange-500 to-amber-500 py-3.5 text-base font-bold text-white shadow-lg shadow-orange-500/25 hover:from-orange-600 hover:to-amber-600 disabled:cursor-not-allowed disabled:opacity-50"
                 >
@@ -1638,8 +1734,8 @@ export function BreakfastOrderingApp({
                   '文字高速切換中，即將開獎…'
                 ) : selectedPerson.isAbsent ? (
                   '休假中無法選餐，請雙擊姓名卡片恢復出勤。'
-                ) : currentOrder?.isManual ? (
-                  '已手動指定餐點；若要使用轉盤請先清空「指定餐點」欄位並離開以儲存。'
+                ) : !foodLineIsEmpty(currentOrder?.selectedFoodId) ? (
+                  '已有餐點；若要重新抽籤請先清空「今日餐點」欄位並離開以儲存。'
                 ) : wheelCandidates.length === 0 ? (
                   '預算不足或無符合餐點，請調整預算、飲料或忌口後再試。'
                 ) : (

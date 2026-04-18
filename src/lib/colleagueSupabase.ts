@@ -70,7 +70,6 @@ export function orderFromRow(r: ColleagueRow): Order {
     userId: r.id,
     selectedDrinkId: r.fixed_drink,
     selectedFoodId: r.current_food,
-    isManual: r.is_manual,
     foodRemark: r.current_note ?? undefined,
   }
 }
@@ -85,7 +84,6 @@ export function colleagueRowFromPersonnelAndOrder(
       userId: p.id,
       selectedDrinkId: p.fixedDrinkId ?? null,
       selectedFoodId: null,
-      isManual: false,
       foodRemark: undefined,
     } satisfies Order)
 
@@ -100,7 +98,7 @@ export function colleagueRowFromPersonnelAndOrder(
     current_food: mealOrder.selectedFoodId ?? null,
     current_note: mealOrder.foodRemark ?? null,
     internal_note: p.extraRemark ?? null,
-    is_manual: mealOrder.isManual,
+    is_manual: false,
   }
 }
 

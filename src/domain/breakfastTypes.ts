@@ -19,12 +19,10 @@ export type Order = {
   userId: string
   selectedDrinkId: string | null
   /**
-   * 對應 colleagues.current_food。
-   * - `isManual === true`：為使用者手動輸入的餐點名稱（任意文字）。
-   * - `isManual === false`：為菜單品項 id（轉盤／先前自動選餐）。
+   * 對應 colleagues.current_food：手動與轉盤共用同一字串。
+   * 多品項請以「 + 」串接（與 UI「＋」按鈕一致）；可為菜單 name 或舊資料之 uuid。
    */
   selectedFoodId: string | null
-  isManual: boolean
   /** 餐點備註（對外：顯示於同事列表與店家彙整） */
   foodRemark?: string
 }
