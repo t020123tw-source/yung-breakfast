@@ -61,7 +61,7 @@ function menuFromMap(
 
 /** current_food 是否視為空白（轉盤可寫入） */
 function foodLineIsEmpty(v: string | null | undefined): boolean {
-  return (v ?? '').trim() === ''
+  return splitCurrentFoodSegments(v).length === 0
 }
 
 /**
@@ -73,8 +73,28 @@ function splitCurrentFoodSegments(raw: string | null | undefined): string[] {
   return s.split('+').map((item) => item.trim()).filter(Boolean)
 }
 
+function mealSlotCountFromCurrentFood(raw: string | null | undefined): number {
+  const segments = splitCurrentFoodSegments(raw)
+  if (raw == null) return 1
+  return Math.max(1, segments.length, raw.split('+').length)
+}
+
 function emptyMealLines(count: number): string[] {
   return Array.from({ length: Math.max(1, count) }, () => '')
+}
+
+function mealLinesForEditor(
+  raw: string | null | undefined,
+  slotCount: number,
+): string[] {
+  const segments = splitCurrentFoodSegments(raw)
+  if (segments.length === 0) return emptyMealLines(slotCount)
+  if (segments.length >= slotCount) return segments
+  return [...segments, ...emptyMealLines(slotCount - segments.length)]
+}
+
+function serializeEmptyMealSlots(count: number): string {
+  return emptyMealLines(count).join(' + ')
 }
 
 /** 儲存：過濾空白列後以半形 ` + ` 串回 current_food */
@@ -82,6 +102,23 @@ function joinMealLinesToCurrentFood(lines: string[]): string | null {
   const filtered = lines.map((x) => x.trim()).filter(Boolean)
   if (filtered.length === 0) return null
   return filtered.join(' + ')
+}
+
+function pickDistinctMealLabelsForPerson(
+  pool: MenuItem[],
+  person: Personnel,
+  slotCount: number,
+): string[] {
+  const available = [...pool]
+  const result: string[] = []
+  while (available.length > 0 && result.length < slotCount) {
+    const idx = Math.floor(Math.random() * available.length)
+    const [pick] = available.splice(idx, 1)
+    if (!pick) break
+    result.push(formatFoodLabelForPerson(pick, person))
+  }
+  while (result.length < slotCount) result.push('')
+  return result
 }
 
 /**
@@ -378,8 +415,8 @@ export function BreakfastOrderingApp({
       Object.fromEntries(
         initialPersonnel.map((p) => {
           const o = initialOrders.find((x) => x.userId === p.id)
-          const count = splitCurrentFoodSegments(o?.selectedFoodId).length
-          return [p.id, Math.max(1, count || 1)]
+          const count = mealSlotCountFromCurrentFood(o?.selectedFoodId)
+          return [p.id, count]
         }),
       ),
   )
@@ -533,11 +570,8 @@ export function BreakfastOrderingApp({
 
   useEffect(() => {
     const o = orders.find((x) => x.userId === selectedPersonId)
-    const persisted = splitCurrentFoodSegments(o?.selectedFoodId)
     const slotCount = Math.max(1, mealSlotCounts[selectedPersonId] ?? 1)
-    setMealLineDrafts(
-      persisted.length > 0 ? persisted : emptyMealLines(slotCount),
-    )
+    setMealLineDrafts(mealLinesForEditor(o?.selectedFoodId, slotCount))
     setFoodRemarkDraft(o?.foodRemark ?? '')
   }, [selectedPersonId, orders, mealSlotCounts])
 
@@ -546,8 +580,8 @@ export function BreakfastOrderingApp({
       const next: Record<string, number> = {}
       for (const p of personnel) {
         const o = orders.find((x) => x.userId === p.id)
-        const persistedCount = splitCurrentFoodSegments(o?.selectedFoodId).length
-        next[p.id] = persistedCount > 0 ? persistedCount : Math.max(1, prev[p.id] ?? 1)
+        const persistedCount = mealSlotCountFromCurrentFood(o?.selectedFoodId)
+        next[p.id] = Math.max(1, persistedCount, prev[p.id] ?? 1)
       }
       return next
     })
@@ -745,20 +779,21 @@ export function BreakfastOrderingApp({
       if (p?.isAbsent) return
       const joined = joinMealLinesToCurrentFood(lines)
       if (joined === null) {
+        const emptyStructure = serializeEmptyMealSlots(lines.length)
         setOrders((prev) =>
           prev.map((row) =>
             row.userId === selectedPersonId
               ? {
                   ...row,
-                  selectedFoodId: null,
+                  selectedFoodId: emptyStructure,
                   foodRemark: undefined,
                 }
               : row,
           ),
         )
         setFoodRemarkDraft('')
-        setMealLineDrafts([''])
-        setMealSlotCounts((prev) => ({ ...prev, [selectedPersonId]: 1 }))
+        setMealLineDrafts(emptyMealLines(lines.length))
+        setMealSlotCounts((prev) => ({ ...prev, [selectedPersonId]: lines.length }))
       } else {
         setOrders((prev) =>
           prev.map((row) =>
@@ -812,25 +847,29 @@ export function BreakfastOrderingApp({
    */
   const clearAllWheelFoodsGlobally = useCallback(() => {
     const nextP = personnel.map((p) => ({ ...p, isAbsent: false }))
+    const nextSlotCounts = Object.fromEntries(
+      nextP.map((p) => [p.id, Math.max(1, mealSlotCounts[p.id] ?? 1)]),
+    ) as Record<string, number>
     const nextO = orders.map((o) => ({
       ...o,
-      selectedFoodId: null,
+      selectedFoodId: serializeEmptyMealSlots(
+        Math.max(1, nextSlotCounts[o.userId] ?? 1),
+      ),
       foodRemark: undefined,
     }))
-    const nextSlotCounts = Object.fromEntries(
-      nextP.map((p) => [p.id, 1]),
-    ) as Record<string, number>
     setPersonnel(nextP)
     setOrders(nextO)
     setMealSlotCounts(nextSlotCounts)
-    setMealLineDrafts([''])
+    setMealLineDrafts(
+      emptyMealLines(Math.max(1, nextSlotCounts[selectedPersonId] ?? 1)),
+    )
     void upsertColleagueRows(
       nextO.map((o) => {
         const p = nextP.find((x) => x.id === o.userId)!
         return colleagueRowFromPersonnelAndOrder(p, o)
       }),
     )
-  }, [personnel, orders])
+  }, [personnel, orders, mealSlotCounts, selectedPersonId])
 
   /**
    * 一鍵全員轉盤：略過休假；僅對 current_food 為空者抽籤，寫入品項顯示名稱（與手動輸入同欄）。
@@ -868,15 +907,12 @@ export function BreakfastOrderingApp({
       if (pool.length === 0) {
         return {
           ...o,
-          selectedFoodId: null,
+          selectedFoodId: serializeEmptyMealSlots(slotCount),
           foodRemark: undefined,
         }
       }
 
-      const labels = Array.from({ length: slotCount }, () => {
-        const pick = pool[Math.floor(Math.random() * pool.length)]
-        return formatFoodLabelForPerson(pick, p)
-      })
+      const labels = pickDistinctMealLabelsForPerson(pool, p, slotCount)
       return {
         ...o,
         selectedFoodId: labels.join(' + '),
@@ -897,7 +933,7 @@ export function BreakfastOrderingApp({
     const co = orders.find((o) => o.userId === selectedPersonId)
     if (co && !foodLineIsEmpty(co.selectedFoodId)) return
     const p = personnel.find((x) => x.id === selectedPersonId)
-    if (p?.isAbsent) return
+    if (!p || p.isAbsent) return
 
     const pool = wheelCandidates
     const n = pool.length
@@ -944,14 +980,7 @@ export function BreakfastOrderingApp({
         mealLineDrafts.length,
         mealSlotCounts[selectedPersonId] ?? 1,
       )
-      const labels = Array.from({ length: slotCount }, (_, idx) =>
-        idx === 0
-          ? formatFoodLabelForPerson(pick, p)
-          : formatFoodLabelForPerson(
-              pool[Math.floor(Math.random() * n)],
-              p,
-            ),
-      )
+      const labels = pickDistinctMealLabelsForPerson(pool, p, slotCount)
       const mealLabel = labels.join(' + ')
       setOrders((prev) =>
         prev.map((o) =>
@@ -1579,6 +1608,7 @@ export function BreakfastOrderingApp({
                         <button
                           type="button"
                           disabled={!!selectedPerson.isAbsent}
+                          onMouseDown={(e) => e.preventDefault()}
                           onClick={() => addMealLineRow()}
                           title="新增下一道餐點"
                           className="mt-1 inline-flex h-[3rem] min-w-[3rem] shrink-0 items-center justify-center self-end rounded-lg border border-amber-400/90 bg-amber-50 text-xl font-bold text-amber-950 shadow-sm hover:bg-amber-100 disabled:cursor-not-allowed disabled:opacity-50"
@@ -1590,6 +1620,7 @@ export function BreakfastOrderingApp({
                         <button
                           type="button"
                           disabled={!!selectedPerson.isAbsent}
+                          onMouseDown={(e) => e.preventDefault()}
                           onClick={() => removeMealLineRow(i)}
                           title="移除此餐點欄位"
                           className="mt-1 inline-flex h-[3rem] min-w-[3rem] shrink-0 items-center justify-center self-end rounded-lg border border-rose-300/90 bg-rose-50 text-xl font-bold text-rose-800 shadow-sm hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
