@@ -1767,7 +1767,9 @@ export function BreakfastOrderingApp({
                         colleagueDragId &&
                         colleagueDragId !== p.id
                           ? 'bg-amber-50/95 ring-1 ring-inset ring-amber-400/50'
-                          : ''
+                          : p.isAbsent
+                            ? 'bg-slate-300/40'
+                            : ''
                       } ${colleagueDragId === p.id ? 'opacity-60' : ''}`}
                       onDragOver={handleColleagueRowDragOver}
                       onDragEnter={() => setColleagueDragOverId(p.id)}
@@ -1782,7 +1784,9 @@ export function BreakfastOrderingApp({
                         className={`grid grid-cols-12 gap-0.5 py-1 pl-0.5 pr-0.5 transition sm:gap-1 sm:pl-1 sm:pr-1 ${
                           active
                             ? 'bg-amber-100/90 ring-1 ring-inset ring-amber-300/80'
-                            : 'hover:bg-amber-50/80'
+                            : p.isAbsent
+                              ? 'bg-slate-300/50'
+                              : 'hover:bg-amber-50/80'
                         }`}
                       >
                         <div className="col-span-2 flex min-h-[2.2rem] min-w-0 gap-0.5">
@@ -1813,7 +1817,11 @@ export function BreakfastOrderingApp({
                               e.preventDefault()
                               cancelScheduledSelectAndToggleAbsent(p.id)
                             }}
-                            className="flex min-h-[2.2rem] min-w-0 max-w-[5.25rem] flex-1 cursor-pointer flex-col items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-0.5 text-center text-xs font-semibold leading-tight text-slate-900 shadow-sm hover:bg-slate-200/70 sm:max-w-[5.75rem] sm:text-sm"
+                            className={`flex min-h-[2.2rem] min-w-0 max-w-[5.25rem] flex-1 cursor-pointer flex-col items-center justify-center rounded-lg border px-1 py-0.5 text-center text-xs font-semibold leading-tight shadow-sm sm:max-w-[5.75rem] sm:text-sm ${
+                              p.isAbsent
+                                ? 'border-slate-400/90 bg-slate-300 text-slate-700'
+                                : 'border-slate-200/90 bg-slate-100 text-slate-900 hover:bg-slate-200/70'
+                            }`}
                           >
                             <span className="line-clamp-2 w-full break-words text-center leading-tight">
                               {p.name}
@@ -1821,14 +1829,20 @@ export function BreakfastOrderingApp({
                           </button>
                         </div>
 
-                        <div className="col-span-3 flex min-h-[2.2rem] min-w-0 items-stretch rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-0.5 shadow-sm">
+                        <div
+                          className={`col-span-3 flex min-h-[2.2rem] min-w-0 items-stretch rounded-lg border px-1 py-0.5 shadow-sm ${
+                            p.isAbsent
+                              ? 'border-slate-400/90 bg-slate-300'
+                              : 'border-slate-200/90 bg-slate-100'
+                          }`}
+                        >
                           <button
                             type="button"
                             title={row.drinkName || undefined}
                             onClick={() => scheduleSelectPerson(p.id)}
                             className={`flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded-md py-0 text-center text-xs font-medium leading-tight sm:text-sm ${
                               p.isAbsent
-                                ? 'text-slate-500 opacity-70'
+                                ? 'text-slate-700 opacity-80'
                                 : 'text-slate-900 hover:bg-slate-200/60'
                             }`}
                           >
@@ -1842,10 +1856,10 @@ export function BreakfastOrderingApp({
                           <button
                             type="button"
                             onClick={() => scheduleSelectPerson(p.id)}
-                            className={`flex min-h-[2.2rem] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-0.5 text-center text-xs font-medium leading-tight shadow-sm sm:text-sm ${
+                            className={`flex min-h-[2.2rem] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-lg border px-1 py-0.5 text-center text-xs font-medium leading-tight shadow-sm sm:text-sm ${
                               p.isAbsent
-                                ? 'text-slate-500 opacity-70'
-                                : 'text-slate-900 hover:bg-slate-200/70'
+                                ? 'border-slate-400/90 bg-slate-300 text-slate-700 opacity-80'
+                                : 'border-slate-200/90 bg-slate-100 text-slate-900 hover:bg-slate-200/70'
                             }`}
                             title={row.mealLine || undefined}
                           >
@@ -1855,7 +1869,9 @@ export function BreakfastOrderingApp({
                                     <span
                                       key={`${p.id}-meal-${idx}`}
                                       className={`min-w-0 shrink truncate rounded px-1 py-0.5 ${
-                                        p.isAbsent ? 'bg-slate-200/60' : 'bg-slate-200/80'
+                                        p.isAbsent
+                                          ? 'bg-slate-400/60 text-slate-700'
+                                          : 'bg-slate-200/80'
                                       }`}
                                     >
                                       {segment}
@@ -1888,7 +1904,11 @@ export function BreakfastOrderingApp({
                         </div>
 
                         <div
-                          className={`col-span-2 flex min-h-[2.2rem] min-w-0 max-w-[4.5rem] items-stretch justify-center self-stretch rounded-lg border border-slate-200/90 bg-slate-100 px-0.5 py-0.5 text-center shadow-sm sm:max-w-[4.75rem] transition-[transform,box-shadow] duration-300 ease-out will-change-transform ${
+                          className={`col-span-2 flex min-h-[2.2rem] min-w-0 max-w-[4.5rem] items-stretch justify-center self-stretch rounded-lg border px-0.5 py-0.5 text-center shadow-sm sm:max-w-[4.75rem] transition-[transform,box-shadow] duration-300 ease-out will-change-transform ${
+                            p.isAbsent
+                              ? 'border-slate-400/90 bg-slate-300'
+                              : 'border-slate-200/90 bg-slate-100'
+                          } ${
                             !p.isAbsent && eggAmountFlashUserId === p.id
                               ? 'z-[1] scale-[1.05] shadow-md ring-2 ring-amber-400 ring-offset-1 ring-offset-amber-50/90'
                               : ''
@@ -1905,7 +1925,7 @@ export function BreakfastOrderingApp({
                             type="button"
                             onClick={() => scheduleSelectPerson(p.id)}
                             className={`flex w-full min-w-0 flex-col items-center justify-center gap-0.5 ${
-                              p.isAbsent ? 'text-slate-500 opacity-70' : 'text-slate-900'
+                              p.isAbsent ? 'text-slate-700 opacity-80' : 'text-slate-900'
                             }`}
                           >
                             <span className="text-[8px] font-medium uppercase tracking-wide text-slate-500">
@@ -1914,7 +1934,7 @@ export function BreakfastOrderingApp({
                             <span
                               className={`text-xs font-bold tabular-nums leading-none sm:text-sm ${
                                 p.isAbsent
-                                  ? 'text-slate-500'
+                                  ? 'text-slate-700'
                                   : hasUnpriced
                                     ? 'text-amber-800'
                                     : 'text-slate-900'

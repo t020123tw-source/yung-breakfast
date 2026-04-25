@@ -206,49 +206,44 @@ export function OtherStorePanel({
     const nextDrafts = Object.fromEntries(
       personnel.map((p) => [
         p.id,
-        {
-          ...(drafts[p.id] ?? {
-            otherFoods: ['', ''] as [string, string],
-            otherPrice1: '',
-            otherPrice2: '',
-            otherIsOnLeave: false,
-          }),
-          otherFoods: [
-            menuByName.has(drafts[p.id]?.otherFoods?.[0]?.trim() ?? '')
-              ? ''
-              : drafts[p.id]?.otherFoods?.[0] ?? '',
-            menuByName.has(drafts[p.id]?.otherFoods?.[1]?.trim() ?? '')
-              ? ''
-              : drafts[p.id]?.otherFoods?.[1] ?? '',
-          ],
-          otherPrice1: menuByName.has(drafts[p.id]?.otherFoods?.[0]?.trim() ?? '')
-            ? ''
-            : drafts[p.id]?.otherPrice1 ?? '',
-          otherPrice2: menuByName.has(drafts[p.id]?.otherFoods?.[1]?.trim() ?? '')
-            ? ''
-            : drafts[p.id]?.otherPrice2 ?? '',
-        },
+        p.isFixedMeal
+          ? (drafts[p.id] ?? {
+              otherFoods: ['', ''] as [string, string],
+              otherPrice1: '',
+              otherPrice2: '',
+              otherIsOnLeave: false,
+            })
+          : {
+              ...(drafts[p.id] ?? {
+                otherFoods: ['', ''] as [string, string],
+                otherPrice1: '',
+                otherPrice2: '',
+                otherIsOnLeave: false,
+              }),
+              otherFoods: ['', ''],
+              otherPrice1: '',
+              otherPrice2: '',
+            },
       ]),
     ) as Record<string, EntryDraft>
     setDrafts(nextDrafts)
     try {
       await Promise.all(
-        personnel.map((p) =>
-          updateColleagueOtherStoreFields(p.id, {
-            other_food: joinOtherFoodsForSave(nextDrafts[p.id]?.otherFoods ?? ['', '']),
-            other_price: computeOtherStoreTotal(
-              nextDrafts[p.id]?.otherPrice1 ?? '',
-              nextDrafts[p.id]?.otherPrice2 ?? '',
-            ),
-            other_price_1: parseOtherStorePriceText(nextDrafts[p.id]?.otherPrice1 ?? ''),
-            other_price_2: parseOtherStorePriceText(nextDrafts[p.id]?.otherPrice2 ?? ''),
-          }),
-        ),
+        personnel
+          .filter((p) => !p.isFixedMeal)
+          .map((p) =>
+            updateColleagueOtherStoreFields(p.id, {
+              other_food: '',
+              other_price: 0,
+              other_price_1: 0,
+              other_price_2: 0,
+            }),
+          ),
       )
     } catch (e) {
       console.error(e)
     }
-  }, [clearPendingSaves, drafts, personnel, menuByName])
+  }, [clearPendingSaves, drafts, personnel])
 
   const summary = useMemo(() => {
     const slot1Map = new Map<string, number>()
@@ -297,6 +292,18 @@ export function OtherStorePanel({
           </div>
 
           <ul className="h-auto flex-1 px-1 pb-0 pt-1 sm:px-2">
+            {personnel.length > 0 ? (
+              <li className="list-none border-b border-amber-200/90 px-0.5 pb-1 pt-0.5 sm:px-1">
+                <div className="flex items-center gap-2 text-[11px] font-semibold text-amber-900/75 sm:gap-2.5 sm:text-xs">
+                  <div className="w-24 shrink-0 text-center">姓名</div>
+                  <div className="min-w-0 flex-1 text-center">餐點一內容</div>
+                  <div className="w-20 shrink-0 text-center">金額</div>
+                  <div className="min-w-0 flex-1 text-center">餐點二內容</div>
+                  <div className="w-20 shrink-0 text-center">金額</div>
+                  <div className="w-20 shrink-0 text-center">總計金額</div>
+                </div>
+              </li>
+            ) : null}
             {personnel.length === 0 ? (
               <li className="list-none px-3 py-8 text-center text-sm text-amber-800/80">
                 目前尚無同事資料。
@@ -323,7 +330,7 @@ export function OtherStorePanel({
                         title={`${p.name}（雙擊切換休假）`}
                         className={`flex min-h-[2.2rem] min-w-0 flex-1 items-center justify-center rounded-lg border px-1.5 py-0.5 text-center text-xs font-semibold leading-tight shadow-sm sm:text-sm ${
                           draft.otherIsOnLeave
-                            ? 'border-slate-200/90 bg-slate-100 text-slate-500 opacity-60'
+                            ? 'border-slate-400/90 bg-slate-300 text-slate-700'
                             : 'border-slate-200/90 bg-slate-100 text-slate-900'
                         }`}
                       >
@@ -370,12 +377,11 @@ export function OtherStorePanel({
                                 console.error(e)
                               }
                             }}
-                            placeholder="餐點 1"
                             autoComplete="off"
                             disabled={!!draft.otherIsOnLeave}
-                            className={`min-h-[2.2rem] min-w-0 w-full flex-1 rounded-lg border px-2 py-0.5 text-xs leading-tight outline-none ring-amber-400/30 focus:ring-2 sm:text-sm ${
+                            className={`min-h-[2.2rem] min-w-0 w-full flex-1 rounded-lg border px-2 py-0.5 text-xs leading-tight outline-none ring-amber-400/30 focus:ring-2 disabled:opacity-100 sm:text-sm ${
                               draft.otherIsOnLeave
-                                ? 'border-slate-200/90 bg-slate-100 text-slate-500'
+                                ? 'border-slate-400/90 bg-slate-300 text-slate-700'
                                 : 'border-slate-200/90 bg-white text-slate-900'
                             }`}
                           />
@@ -415,12 +421,11 @@ export function OtherStorePanel({
                                 console.error(e)
                               }
                             }}
-                            placeholder="金額"
                             autoComplete="off"
                             disabled={!!draft.otherIsOnLeave}
-                            className={`min-h-[2.2rem] w-20 shrink-0 rounded-lg border px-2 py-0.5 text-right text-xs font-medium leading-tight outline-none ring-amber-400/30 focus:ring-2 sm:text-sm ${
+                            className={`min-h-[2.2rem] w-20 shrink-0 rounded-lg border px-2 py-0.5 text-right text-xs font-medium leading-tight outline-none ring-amber-400/30 focus:ring-2 disabled:opacity-100 sm:text-sm ${
                               draft.otherIsOnLeave
-                                ? 'border-slate-200/90 bg-slate-100 text-slate-500'
+                                ? 'border-slate-400/90 bg-slate-300 text-slate-700'
                                 : 'border-slate-200/90 bg-white text-slate-900'
                             }`}
                           />
@@ -461,12 +466,11 @@ export function OtherStorePanel({
                                 console.error(e)
                               }
                             }}
-                            placeholder="餐點 2"
                             autoComplete="off"
                             disabled={!!draft.otherIsOnLeave}
-                            className={`min-h-[2.2rem] min-w-0 w-full flex-1 rounded-lg border px-2 py-0.5 text-xs leading-tight outline-none ring-amber-400/30 focus:ring-2 sm:text-sm ${
+                            className={`min-h-[2.2rem] min-w-0 w-full flex-1 rounded-lg border px-2 py-0.5 text-xs leading-tight outline-none ring-amber-400/30 focus:ring-2 disabled:opacity-100 sm:text-sm ${
                               draft.otherIsOnLeave
-                                ? 'border-slate-200/90 bg-slate-100 text-slate-500'
+                                ? 'border-slate-400/90 bg-slate-300 text-slate-700'
                                 : 'border-slate-200/90 bg-white text-slate-900'
                             }`}
                           />
@@ -506,12 +510,11 @@ export function OtherStorePanel({
                                 console.error(e)
                               }
                             }}
-                            placeholder="金額"
                             autoComplete="off"
                             disabled={!!draft.otherIsOnLeave}
-                            className={`min-h-[2.2rem] w-20 shrink-0 rounded-lg border px-2 py-0.5 text-right text-xs font-medium leading-tight outline-none ring-amber-400/30 focus:ring-2 sm:text-sm ${
+                            className={`min-h-[2.2rem] w-20 shrink-0 rounded-lg border px-2 py-0.5 text-right text-xs font-medium leading-tight outline-none ring-amber-400/30 focus:ring-2 disabled:opacity-100 sm:text-sm ${
                               draft.otherIsOnLeave
-                                ? 'border-slate-200/90 bg-slate-100 text-slate-500'
+                                ? 'border-slate-400/90 bg-slate-300 text-slate-700'
                                 : 'border-slate-200/90 bg-white text-slate-900'
                             }`}
                           />
@@ -523,12 +526,11 @@ export function OtherStorePanel({
                         type="text"
                         readOnly
                         value={totalPriceText}
-                        placeholder="總額"
                         autoComplete="off"
                         disabled={!!draft.otherIsOnLeave}
-                        className={`min-h-[2.2rem] w-full rounded-lg border px-2 py-0.5 text-right text-xs font-medium leading-tight outline-none sm:text-sm ${
+                        className={`min-h-[2.2rem] w-full rounded-lg border px-2 py-0.5 text-right text-xs font-medium leading-tight outline-none disabled:opacity-100 sm:text-sm ${
                           draft.otherIsOnLeave
-                            ? 'border-slate-200/90 bg-slate-100 text-slate-500'
+                            ? 'border-slate-400/90 bg-slate-300 text-slate-700'
                             : 'border-slate-200/90 bg-slate-50 text-slate-900'
                         }`}
                       />
