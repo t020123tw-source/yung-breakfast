@@ -199,6 +199,19 @@ function getSummaryCategoryWeight(label: string): number {
   return index === -1 ? categoryKeywords.length : index
 }
 
+function parseDrinkName(name: string): { size: string; baseName: string } {
+  const trimmed = name.trim()
+  const match = trimmed.match(/^[\[(（]\s*([大中小])\s*[\])）]\s*(.*)$/)
+  if (!match) {
+    return { size: '', baseName: trimmed }
+  }
+
+  const [, sizeToken = '', rest = ''] = match
+  const size = `(${sizeToken})`
+  const baseName = rest.trim()
+  return { size, baseName: baseName || trimmed }
+}
+
 export function compareSummaryLabelsByMenu(
   a: string,
   b: string,
@@ -206,9 +219,26 @@ export function compareSummaryLabelsByMenu(
 ): number {
   const aBaseLabel = findMenuItemByLabelPrefix(a, menu)?.name ?? a
   const bBaseLabel = findMenuItemByLabelPrefix(b, menu)?.name ?? b
-  const weightDiff =
-    getSummaryCategoryWeight(aBaseLabel) - getSummaryCategoryWeight(bBaseLabel)
+  const aCategoryWeight = getSummaryCategoryWeight(aBaseLabel)
+  const bCategoryWeight = getSummaryCategoryWeight(bBaseLabel)
+  const weightDiff = aCategoryWeight - bCategoryWeight
   if (weightDiff !== 0) return weightDiff
+
+  if (aCategoryWeight === 0 && bCategoryWeight === 0) {
+    const sizeWeight: Record<string, number> = {
+      '(大)': 1,
+      '(中)': 2,
+      '(小)': 3,
+    }
+    const aDrink = parseDrinkName(aBaseLabel)
+    const bDrink = parseDrinkName(bBaseLabel)
+    const baseNameDiff = aDrink.baseName.localeCompare(bDrink.baseName, 'zh-TW')
+    if (baseNameDiff !== 0) return baseNameDiff
+    const aSizeWeight = sizeWeight[aDrink.size] ?? 4
+    const bSizeWeight = sizeWeight[bDrink.size] ?? 4
+    if (aSizeWeight !== bSizeWeight) return aSizeWeight - bSizeWeight
+  }
+
   return a.localeCompare(b, 'zh-TW')
 }
 
