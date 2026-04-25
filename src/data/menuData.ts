@@ -181,18 +181,34 @@ export function findMenuItemByLabelPrefix(
   return matched
 }
 
+function getSummaryCategoryWeight(label: string): number {
+  const categoryKeywords: string[][] = [
+    ['茶', '奶', '咖啡', '豆漿', '汁'],
+    ['吐司'],
+    ['厚片'],
+    ['蛋餅'],
+    ['堡', '軟法', '可頌', '滿福'],
+    ['抓餅', '蘿蔔糕', '煎餃'],
+    ['蛋', '熱狗', '雞塊'],
+  ]
+
+  const text = label.trim()
+  const index = categoryKeywords.findIndex((keywords) =>
+    keywords.some((keyword) => text.includes(keyword)),
+  )
+  return index === -1 ? categoryKeywords.length : index
+}
+
 export function compareSummaryLabelsByMenu(
   a: string,
   b: string,
   menu: MenuItem[],
 ): number {
-  const aItem = findMenuItemByLabelPrefix(a, menu)
-  const bItem = findMenuItemByLabelPrefix(b, menu)
-  if (aItem && bItem) {
-    return compareMenuItemsForDisplay(aItem, bItem) || a.localeCompare(b, 'zh-TW')
-  }
-  if (aItem && !bItem) return -1
-  if (!aItem && bItem) return 1
+  const aBaseLabel = findMenuItemByLabelPrefix(a, menu)?.name ?? a
+  const bBaseLabel = findMenuItemByLabelPrefix(b, menu)?.name ?? b
+  const weightDiff =
+    getSummaryCategoryWeight(aBaseLabel) - getSummaryCategoryWeight(bBaseLabel)
+  if (weightDiff !== 0) return weightDiff
   return a.localeCompare(b, 'zh-TW')
 }
 
