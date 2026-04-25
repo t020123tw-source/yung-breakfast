@@ -47,6 +47,7 @@ export type BreakfastOrderingAppProps = {
 const EGG_REMARK_TOKEN = '+蛋'
 const EGG_EXTRA_PRICE = 15
 const NOT_TOASTED_REMARK_TOKEN = '不烤'
+const DEFAULT_BUDGET_INPUT = '65'
 
 function buildMenuMap(menu: MenuItem[]): Map<string, MenuItem> {
   const m = new Map<string, MenuItem>()
@@ -323,29 +324,6 @@ function formatFoodLabelForPerson(
   return appendDisplayRemark(s, options?.foodRemark)
 }
 
-/** 休假狀態：飲料／餐點格內之小紅圓＋白叉（置中） */
-function AbsentSlotIcon() {
-  return (
-    <span
-      className="inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-red-600 text-white shadow-sm ring-1 ring-red-700/30"
-      role="img"
-      aria-label="休假"
-    >
-      <svg
-        viewBox="0 0 24 24"
-        className="size-3.5"
-        aria-hidden
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={3}
-        strokeLinecap="round"
-      >
-        <path d="M7 7l10 10M17 7L7 17" />
-      </svg>
-    </span>
-  )
-}
-
 /** HTML5 拖曳：將 source 列插入至 target 列位置，並重編 orderIndex 為 1…n */
 function reorderPersonnelByInsert(
   list: Personnel[],
@@ -468,9 +446,11 @@ export function BreakfastOrderingApp({
   onColleaguesSynced,
 }: BreakfastOrderingAppProps) {
   const [budgetInput, setBudgetInput] = useState(() => {
-    if (typeof window === 'undefined') return '120'
+    if (typeof window === 'undefined') return DEFAULT_BUDGET_INPUT
     const saved = window.localStorage.getItem('budget')
-    return saved && saved.trim() !== '' ? saved : '120'
+    if (!saved || saved.trim() === '') return DEFAULT_BUDGET_INPUT
+    const parsed = parseInt(saved.replace(/\D/g, ''), 10)
+    return Number.isFinite(parsed) ? String(Math.max(0, parsed)) : DEFAULT_BUDGET_INPUT
   })
   const globalBudget = useMemo(() => {
     const n = parseInt(budgetInput.replace(/\D/g, ''), 10)
@@ -582,10 +562,26 @@ export function BreakfastOrderingApp({
     latestSelectedPersonIdRef.current = selectedPersonId
   }, [selectedPersonId])
 
-  useEffect(() => {
-    if (typeof window === 'undefined') return
-    window.localStorage.setItem('budget', budgetInput)
-  }, [budgetInput])
+  const handleBudgetInputChange = useCallback(
+    (value: string) => {
+      setBudgetInput(value)
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem('budget', value)
+      }
+    },
+    [],
+  )
+
+  const handleBudgetInputBlur = useCallback((value: string) => {
+    const parsed = parseInt(value.replace(/\D/g, ''), 10)
+    const normalized = Number.isFinite(parsed)
+      ? String(Math.max(0, parsed))
+      : DEFAULT_BUDGET_INPUT
+    setBudgetInput(normalized)
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem('budget', normalized)
+    }
+  }, [])
 
   useEffect(() => {
     const ids = [...persistIdsRef.current]
@@ -1501,23 +1497,10 @@ export function BreakfastOrderingApp({
       const nextPersonnel = personnel.map((p) =>
         p.id === id ? { ...p, isAbsent: nextAbsent } : p,
       )
-      const nextOrders = orders.map((o) => {
-        if (o.userId !== id) return o
-        if (nextAbsent) {
-          return {
-            ...o,
-            selectedFoodId: null,
-            foodRemark: undefined,
-            manualFoodPrice: 0,
-          }
-        }
-        const np = nextPersonnel.find((x) => x.id === id)!
-        return { ...o, selectedDrinkId: np.fixedDrinkId ?? null }
-      })
       setPersonnel(nextPersonnel)
-      setOrders(nextOrders)
+      latestPersonnelRef.current = nextPersonnel
       const p = nextPersonnel.find((x) => x.id === id)!
-      const o = nextOrders.find((x) => x.userId === id)
+      const o = orders.find((x) => x.userId === id)
       void persistRowsNow([colleagueRowFromPersonnelAndOrder(p, o)]).catch((err) => {
         console.error('Supabase Error:', err)
       })
@@ -1657,9 +1640,6 @@ export function BreakfastOrderingApp({
     if (!o || !p) {
       return { name: '—', drinkName: '', mealLine: '', mealSegments: [], mealRemark: '' }
     }
-    if (p.isAbsent) {
-      return { name: p.name, drinkName: '', mealLine: '', mealSegments: [], mealRemark: '' }
-    }
     const drinkItem = o.selectedDrinkId ? menuFromMap(menuMap, o.selectedDrinkId) : undefined
     const drinkName = drinkItem ? formatFoodLabelForPerson(drinkItem, p) : ''
     const mealSegments = splitCurrentFoodSegments(o.selectedFoodId).map(
@@ -1750,10 +1730,9 @@ export function BreakfastOrderingApp({
                           inputMode="numeric"
                           autoComplete="off"
                           value={budgetInput}
-                          onChange={(e) => setBudgetInput(e.target.value)}
+                          onChange={(e) => handleBudgetInputChange(e.target.value)}
                           onBlur={(e) => {
-                            if (typeof window === 'undefined') return
-                            window.localStorage.setItem('budget', e.target.value)
+                            void handleBudgetInputBlur(e.target.value)
                           }}
                           aria-label="全域預算（每人餐點上限）"
                           className="w-[3.25rem] min-w-0 appearance-none border-0 bg-transparent py-0 text-right text-xs font-semibold tabular-nums outline-none ring-0 focus:ring-0 sm:w-[3.75rem] sm:text-sm [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
@@ -1843,53 +1822,55 @@ export function BreakfastOrderingApp({
                         </div>
 
                         <div className="col-span-3 flex min-h-[2.2rem] min-w-0 items-stretch rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-0.5 shadow-sm">
-                          {p.isAbsent ? (
-                            <div className="flex min-w-0 flex-1 items-center justify-center text-center">
-                              <AbsentSlotIcon />
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              title={row.drinkName || undefined}
-                              onClick={() => scheduleSelectPerson(p.id)}
-                              className="flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded-md py-0 text-center text-xs font-medium leading-tight text-slate-900 hover:bg-slate-200/60 sm:text-sm"
-                            >
-                              <span className="line-clamp-2 block min-w-0 max-w-full break-words text-center leading-tight">
-                                {row.drinkName}
-                              </span>
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            title={row.drinkName || undefined}
+                            onClick={() => scheduleSelectPerson(p.id)}
+                            className={`flex min-w-0 flex-1 items-center justify-center overflow-hidden rounded-md py-0 text-center text-xs font-medium leading-tight sm:text-sm ${
+                              p.isAbsent
+                                ? 'text-slate-500 opacity-70'
+                                : 'text-slate-900 hover:bg-slate-200/60'
+                            }`}
+                          >
+                            <span className="line-clamp-2 block min-w-0 max-w-full break-words text-center leading-tight">
+                              {row.drinkName || (p.isAbsent ? '休假中' : '')}
+                            </span>
+                          </button>
                         </div>
 
                         <div className="col-span-5 flex min-h-[2.2rem] min-w-0 items-stretch gap-0.5">
-                          {p.isAbsent ? (
-                            <div className="flex min-h-[2.2rem] min-w-0 flex-1 items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-0.5 text-center shadow-sm">
-                              <AbsentSlotIcon />
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => scheduleSelectPerson(p.id)}
-                              className="flex min-h-[2.2rem] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-0.5 text-center text-xs font-medium leading-tight text-slate-900 shadow-sm hover:bg-slate-200/70 sm:text-sm"
-                              title={row.mealLine || undefined}
-                            >
-                              <span className="flex min-w-0 flex-1 flex-row flex-nowrap items-center justify-center gap-1 overflow-hidden whitespace-nowrap text-center leading-tight">
-                                {row.mealSegments.map((segment, idx) => (
-                                  <span
-                                    key={`${p.id}-meal-${idx}`}
-                                    className="min-w-0 shrink truncate rounded bg-slate-200/80 px-1 py-0.5"
-                                  >
-                                    {segment}
-                                  </span>
-                                ))}
-                                {row.mealRemark ? (
-                                  <span className="shrink-0 truncate text-[10px] text-slate-500">
-                                    （{row.mealRemark}）
-                                  </span>
-                                ) : null}
-                              </span>
-                            </button>
-                          )}
+                          <button
+                            type="button"
+                            onClick={() => scheduleSelectPerson(p.id)}
+                            className={`flex min-h-[2.2rem] min-w-0 flex-1 items-center justify-center overflow-hidden rounded-lg border border-slate-200/90 bg-slate-100 px-1 py-0.5 text-center text-xs font-medium leading-tight shadow-sm sm:text-sm ${
+                              p.isAbsent
+                                ? 'text-slate-500 opacity-70'
+                                : 'text-slate-900 hover:bg-slate-200/70'
+                            }`}
+                            title={row.mealLine || undefined}
+                          >
+                            <span className="flex min-w-0 flex-1 flex-row flex-nowrap items-center justify-center gap-1 overflow-hidden whitespace-nowrap text-center leading-tight">
+                              {row.mealSegments.length > 0
+                                ? row.mealSegments.map((segment, idx) => (
+                                    <span
+                                      key={`${p.id}-meal-${idx}`}
+                                      className={`min-w-0 shrink truncate rounded px-1 py-0.5 ${
+                                        p.isAbsent ? 'bg-slate-200/60' : 'bg-slate-200/80'
+                                      }`}
+                                    >
+                                      {segment}
+                                    </span>
+                                  ))
+                                : p.isAbsent
+                                  ? '休假中'
+                                  : null}
+                              {row.mealRemark ? (
+                                <span className="shrink-0 truncate text-[10px] text-slate-500">
+                                  （{row.mealRemark}）
+                                </span>
+                              ) : null}
+                            </span>
+                          </button>
                           {!p.isAbsent && row.mealLine ? (
                             <button
                               type="button"
@@ -1920,33 +1901,33 @@ export function BreakfastOrderingApp({
                                 : `合計 $${lineTotal}`
                           }
                         >
-                          {p.isAbsent ? (
-                            <div className="flex flex-1 items-center justify-center">
-                              <AbsentSlotIcon />
-                            </div>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => scheduleSelectPerson(p.id)}
-                              className="flex w-full min-w-0 flex-col items-center justify-center gap-0.5 text-slate-900"
+                          <button
+                            type="button"
+                            onClick={() => scheduleSelectPerson(p.id)}
+                            className={`flex w-full min-w-0 flex-col items-center justify-center gap-0.5 ${
+                              p.isAbsent ? 'text-slate-500 opacity-70' : 'text-slate-900'
+                            }`}
+                          >
+                            <span className="text-[8px] font-medium uppercase tracking-wide text-slate-500">
+                              金額
+                            </span>
+                            <span
+                              className={`text-xs font-bold tabular-nums leading-none sm:text-sm ${
+                                p.isAbsent
+                                  ? 'text-slate-500'
+                                  : hasUnpriced
+                                    ? 'text-amber-800'
+                                    : 'text-slate-900'
+                              }`}
                             >
-                              <span className="text-[8px] font-medium uppercase tracking-wide text-slate-500">
-                                金額
+                              $ {lineTotal}
+                            </span>
+                            {!p.isAbsent && hasUnpriced ? (
+                              <span className="max-w-full truncate text-[9px] leading-tight text-amber-700/90">
+                                部分未入價
                               </span>
-                              <span
-                                className={`text-xs font-bold tabular-nums leading-none sm:text-sm ${
-                                  hasUnpriced ? 'text-amber-800' : 'text-slate-900'
-                                }`}
-                              >
-                                $ {lineTotal}
-                              </span>
-                              {hasUnpriced ? (
-                                <span className="max-w-full truncate text-[9px] leading-tight text-amber-700/90">
-                                  部分未入價
-                                </span>
-                              ) : null}
-                            </button>
-                          )}
+                            ) : null}
+                          </button>
                         </div>
                       </div>
                     </li>

@@ -99,28 +99,6 @@ function formatOneSlotSummary(slotMap: Map<string, number>, menu: MenuItem[]): s
     .map(([food, count]) => `${food} x ${count}`)
 }
 
-function AbsentSlotIcon() {
-  return (
-    <span
-      className="inline-flex size-6 shrink-0 items-center justify-center rounded-full bg-red-600 text-white shadow-sm ring-1 ring-red-700/30"
-      role="img"
-      aria-label="休假"
-    >
-      <svg
-        viewBox="0 0 24 24"
-        className="size-3.5"
-        aria-hidden
-        fill="none"
-        stroke="currentColor"
-        strokeWidth={3}
-        strokeLinecap="round"
-      >
-        <path d="M7 7l10 10M17 7L7 17" />
-      </svg>
-    </span>
-  )
-}
-
 function normalizeDraftMap(
   personnel: Personnel[],
   entries: OtherStoreEntry[],
@@ -354,22 +332,6 @@ export function OtherStorePanel({
                     </div>
 
                     <div className="flex min-h-[2.2rem] min-w-0 flex-1 items-center gap-2">
-                      {draft.otherIsOnLeave ? (
-                        <>
-                          <div className="flex min-h-[2.2rem] min-w-0 flex-1 items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100">
-                            <AbsentSlotIcon />
-                          </div>
-                          <div className="flex w-20 shrink-0 items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100">
-                            <AbsentSlotIcon />
-                          </div>
-                          <div className="flex min-h-[2.2rem] min-w-0 flex-1 items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100">
-                            <AbsentSlotIcon />
-                          </div>
-                          <div className="flex w-20 shrink-0 items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100">
-                            <AbsentSlotIcon />
-                          </div>
-                        </>
-                      ) : (
                         <>
                           <input
                             type="text"
@@ -411,7 +373,11 @@ export function OtherStorePanel({
                             placeholder="餐點 1"
                             autoComplete="off"
                             disabled={!!draft.otherIsOnLeave}
-                            className="min-h-[2.2rem] min-w-0 w-full flex-1 rounded-lg border border-slate-200/90 bg-white px-2 py-0.5 text-xs leading-tight text-slate-900 outline-none ring-amber-400/30 focus:ring-2 sm:text-sm"
+                            className={`min-h-[2.2rem] min-w-0 w-full flex-1 rounded-lg border px-2 py-0.5 text-xs leading-tight outline-none ring-amber-400/30 focus:ring-2 sm:text-sm ${
+                              draft.otherIsOnLeave
+                                ? 'border-slate-200/90 bg-slate-100 text-slate-500'
+                                : 'border-slate-200/90 bg-white text-slate-900'
+                            }`}
                           />
                           <input
                             type="text"
@@ -452,7 +418,11 @@ export function OtherStorePanel({
                             placeholder="金額"
                             autoComplete="off"
                             disabled={!!draft.otherIsOnLeave}
-                            className="min-h-[2.2rem] w-20 shrink-0 rounded-lg border border-slate-200/90 bg-white px-2 py-0.5 text-right text-xs font-medium leading-tight text-slate-900 outline-none ring-amber-400/30 focus:ring-2 sm:text-sm"
+                            className={`min-h-[2.2rem] w-20 shrink-0 rounded-lg border px-2 py-0.5 text-right text-xs font-medium leading-tight outline-none ring-amber-400/30 focus:ring-2 sm:text-sm ${
+                              draft.otherIsOnLeave
+                                ? 'border-slate-200/90 bg-slate-100 text-slate-500'
+                                : 'border-slate-200/90 bg-white text-slate-900'
+                            }`}
                           />
                           <input
                             type="text"
@@ -494,7 +464,11 @@ export function OtherStorePanel({
                             placeholder="餐點 2"
                             autoComplete="off"
                             disabled={!!draft.otherIsOnLeave}
-                            className="min-h-[2.2rem] min-w-0 w-full flex-1 rounded-lg border border-slate-200/90 bg-white px-2 py-0.5 text-xs leading-tight text-slate-900 outline-none ring-amber-400/30 focus:ring-2 sm:text-sm"
+                            className={`min-h-[2.2rem] min-w-0 w-full flex-1 rounded-lg border px-2 py-0.5 text-xs leading-tight outline-none ring-amber-400/30 focus:ring-2 sm:text-sm ${
+                              draft.otherIsOnLeave
+                                ? 'border-slate-200/90 bg-slate-100 text-slate-500'
+                                : 'border-slate-200/90 bg-white text-slate-900'
+                            }`}
                           />
                           <input
                             type="text"
@@ -535,28 +509,29 @@ export function OtherStorePanel({
                             placeholder="金額"
                             autoComplete="off"
                             disabled={!!draft.otherIsOnLeave}
-                            className="min-h-[2.2rem] w-20 shrink-0 rounded-lg border border-slate-200/90 bg-white px-2 py-0.5 text-right text-xs font-medium leading-tight text-slate-900 outline-none ring-amber-400/30 focus:ring-2 sm:text-sm"
+                            className={`min-h-[2.2rem] w-20 shrink-0 rounded-lg border px-2 py-0.5 text-right text-xs font-medium leading-tight outline-none ring-amber-400/30 focus:ring-2 sm:text-sm ${
+                              draft.otherIsOnLeave
+                                ? 'border-slate-200/90 bg-slate-100 text-slate-500'
+                                : 'border-slate-200/90 bg-white text-slate-900'
+                            }`}
                           />
                         </>
-                      )}
                     </div>
 
                     <div className="flex w-20 shrink-0 min-h-[2.2rem] min-w-0 items-stretch">
-                      {draft.otherIsOnLeave ? (
-                        <div className="flex min-h-[2.2rem] w-full items-center justify-center rounded-lg border border-slate-200/90 bg-slate-100">
-                          <AbsentSlotIcon />
-                        </div>
-                      ) : (
-                        <input
-                          type="text"
-                          readOnly
-                          value={totalPriceText}
-                          placeholder="總額"
-                          autoComplete="off"
-                          disabled={!!draft.otherIsOnLeave}
-                          className="min-h-[2.2rem] w-full rounded-lg border border-slate-200/90 bg-slate-50 px-2 py-0.5 text-right text-xs font-medium leading-tight text-slate-900 outline-none sm:text-sm"
-                        />
-                      )}
+                      <input
+                        type="text"
+                        readOnly
+                        value={totalPriceText}
+                        placeholder="總額"
+                        autoComplete="off"
+                        disabled={!!draft.otherIsOnLeave}
+                        className={`min-h-[2.2rem] w-full rounded-lg border px-2 py-0.5 text-right text-xs font-medium leading-tight outline-none sm:text-sm ${
+                          draft.otherIsOnLeave
+                            ? 'border-slate-200/90 bg-slate-100 text-slate-500'
+                            : 'border-slate-200/90 bg-slate-50 text-slate-900'
+                        }`}
+                      />
                     </div>
                   </div>
                 </li>
